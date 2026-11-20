@@ -34,10 +34,12 @@ vault (tix vault default; else the only vault).`,
 		feedbackCmd(),
 		statusCmd(),
 		openCmd(),
-
+		syncCmd(),
 		wsCmd(),
 
 		specCmd(),
+
+		ticketCmd(),
 	)
 	return root
 }

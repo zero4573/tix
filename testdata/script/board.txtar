@@ -1,0 +1,64 @@
+# tix board set / wave: task lines of board.md, updated under a lock
+mkdir home/Documents/Obsidian/a/.obsidian home/Documents/Obsidian/a/tickets/MAN-1
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+cp board.md home/Documents/Obsidian/a/tickets/MAN-1/board.md
+env B=home/Documents/Obsidian/a/tickets/MAN-1/board.md
+
+exec tix board wave MAN-1
+stdout '^wave 2: 03 running, 04 planned$'
+stdout '^finished: -$'
+stdout '^open: 03, 04$'
+exec tix board wave MAN-1 --wave 1
+stdout '^wave 1: 01 merged abc1234, 02 dropped$'
+stdout '^finished: 01, 02$'
+! exec tix board wave MAN-1 --wave 9
+stdout 'wave 9: no tasks'
+
+# running to merged: box, word and date; the rest of the line stays
+exec tix board set MAN-1 03 'merged 1234abc'
+stdout '^- \[x\] 03 · merged 1234abc · \[\[MAN-1-03-c\]\] · acme · w2 · deps 01 · first ➕ 2026-01-02 ✅ [0-9]{4}-[0-9]{2}-[0-9]{2}$'
+grep '^- \[x\] 03 · merged 1234abc · ' $B
+# back to partial with a note: the date mark goes
+exec tix board set MAN-1 03 partial --note 'checks fail: lint'
+stdout '^- \[/\] 03 · partial · \[\[MAN-1-03-c\]\] · acme · w2 · deps 01 · checks fail: lint ➕ 2026-01-02$'
+# conditional: only a running line becomes orphaned
+! exec tix board set MAN-1 03 orphaned --from running
+stderr 'task 03 is .partial., not .running.'
+grep '^- \[/\] 03 · partial · ' $B
+exec tix board set MAN-1 04 running --from planned
+grep '^- \[/\] 04 · running · ' $B
+exec tix board set MAN-1 04 dropped
+grep '^- \[-\] 04 · dropped · .* ❌ [0-9-]+$' $B
+# the other lines and sections are untouched
+grep '^- \[x\] 01 · merged abc1234 · .* ✅ 2026-01-03$' $B
+grep '^- w1 · acme · a..b' $B
+
+# errors
+! exec tix board set MAN-1 09 running
+stderr 'no task 09 on the board'
+! exec tix board set MAN-1 03 done
+stderr 'unknown status'
+! exec tix board set MAN-1 03 partial --note 'a · b'
+stderr 'one non-empty line'
+! exec tix board set NOPE-1 03 partial
+stderr 'has no board.md'
+
+-- man-1.md --
+---
+summary: First
+---
+-- board.md --
+---
+type: board
+wave: 2
+---
+# Board
+
+## Tasks
+- [x] 01 · merged abc1234 · [[MAN-1-01-a]] · acme · w1 · deps - · base ➕ 2026-01-01 ✅ 2026-01-03
+- [-] 02 · dropped · [[MAN-1-02-b]] · acme · w1 · deps - · not needed ➕ 2026-01-01 ❌ 2026-01-02
+- [/] 03 · running · [[MAN-1-03-c]] · acme · w2 · deps 01 · first ➕ 2026-01-02
+- [ ] 04 · planned · [[MAN-1-04-d]] · acme · w2 · deps 03 · second ➕ 2026-01-02
+
+## Reviews
+- w1 · acme · a..b · M/S/C 0/1/0 · [[wave-1-acme]] · -

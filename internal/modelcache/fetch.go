@@ -1,0 +1,253 @@
+package modelcache
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/signal"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/zero4573/tix/internal/lock"
+)
+
+var (
+	headerTimeout = 30 * time.Second
+	idleTimeout   = 60 * time.Second
+)
+
+var (
+	mkdirAll   = os.MkdirAll
+	createTemp = os.CreateTemp
+)
+
+func newClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{Transport: tr}
+}
+
+type idleReader struct {
+	r io.Reader
+	t *time.Timer
+}
+
+func (i idleReader) Read(p []byte) (int, error) {
+	n, err := i.r.Read(p)
+	if n > 0 {
+		i.t.Reset(idleTimeout)
+	}
+	return n, err
+}
+
+func removeStale(dir string) {
+	for _, pat := range []string{".download-*", ".stage-*"} {
+		old, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, p := range old {
+			os.RemoveAll(p)
+		}
+	}
+}
+
+func Fetch(ctx context.Context, id string, w io.Writer) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	return fetch(ctx, pins(), newClient(), id, w)
+}
+
+func fetch(ctx context.Context, p *pinFile, c *http.Client, id string, w io.Writer) error {
+	if w == nil {
+		w = io.Discard
+	}
+	m, ok := modelOf(p, id)
+	if !ok {
+		return fmt.Errorf("unknown model %q (tix vault model list)", id)
+	}
+	libDir, err := libDirFor(p)
+	if err != nil {
+		return err
+	}
+	if err := mkdirAll(Dir(), 0o755); err != nil {
+		return err
+	}
+	return lock.WithContext(ctx, filepath.Join(Dir(), ".fetch.lock"),
+		func() { fmt.Fprintln(w, "waiting for another model fetch…") },
+		func() error { return fetchLocked(ctx, p, c, m, w, libDir) })
+}
+
+func fetchLocked(ctx context.Context, p *pinFile, c *http.Client, m Model, w io.Writer, libDir string) error {
+	id := m.ID
+	st := statusOf(p, id)
+	removeStale(filepath.Dir(libDir))
+	removeStale(filepath.Dir(ModelPath(m)))
+	if st.LibOK {
+		fmt.Fprintf(w, "llama.cpp %s: present\n", p.Llama.Version)
+	} else {
+		a := p.Llama.Assets[platformKey()]
+		fmt.Fprintf(w, "llama.cpp %s (%s): downloading\n", p.Llama.Version, platformKey())
+		if err := fetchLib(ctx, c, a, libDir); err != nil {
+			return err
+		}
+	}
+	if st.ModelOK {
+		fmt.Fprintf(w, "model %s: present\n", id)
+		return nil
+	}
+	fmt.Fprintf(w, "model %s: downloading\n", id)
+	dst := ModelPath(m)
+	if err := mkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp, err := createTemp(filepath.Dir(dst), ".download-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	err = download(ctx, c, m.URL, m.SHA256, tmp)
+	tmp.Close()
+	if err != nil {
+		return fmt.Errorf("model %s: %w", id, err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
+}
+
+func download(ctx context.Context, c *http.Client, url, want string, f *os.File) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	idle := time.AfterFunc(idleTimeout, cancel)
+	defer idle.Stop()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, h), idleReader{resp.Body, idle}); err != nil {
+		return fmt.Errorf("GET %s: %w", url, err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 mismatch for %s: got %s, pinned %s", url, got, want)
+	}
+	return nil
+}
+
+func fetchLib(ctx context.Context, c *http.Client, a asset, libDir string) error {
+	parent := filepath.Dir(libDir)
+	if err := mkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	arc, err := createTemp(parent, ".download-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(arc.Name())
+	defer arc.Close()
+	if err := download(ctx, c, a.URL, a.SHA256, arc); err != nil {
+		return fmt.Errorf("llama.cpp: %w", err)
+	}
+	if _, err := arc.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(parent, ".stage-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	if err := extract(arc, a, stage); err != nil {
+		return fmt.Errorf("llama.cpp: %w", err)
+	}
+	if err := os.RemoveAll(libDir); err != nil {
+		return err
+	}
+	// MkdirTemp makes it 0700, unreadable to a sandbox that maps another uid
+	if err := os.Chmod(stage, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(stage, libDir)
+}
+
+func extract(r io.Reader, a asset, dir string) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	want := map[string][]string{}
+	for _, f := range a.Files {
+		want[path.Join(a.Dir, f.Member)] = append(want[path.Join(a.Dir, f.Member)], f.As)
+	}
+	done := 0
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		names, ok := want[path.Clean(strings.TrimPrefix(h.Name, "./"))]
+		if !ok || h.Typeflag != tar.TypeReg {
+			continue
+		}
+		for i, name := range names {
+			if i > 0 {
+				if err := copyFile(filepath.Join(dir, names[0]), filepath.Join(dir, name)); err != nil {
+					return err
+				}
+				continue
+			}
+			out, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+		}
+		done++
+	}
+	if done != len(want) {
+		return fmt.Errorf("the archive lacks %d of the %d pinned files", len(want)-done, len(want))
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}

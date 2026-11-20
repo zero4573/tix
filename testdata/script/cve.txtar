@@ -12,7 +12,7 @@ cp state.json home/Documents/Obsidian/a/security/.state.json
 exec tix cve due --every 6h
 stdout '^not-due last 2099-01-01T00:00:00Z next 2099-01-01T06:00:00Z$'
 exec tix cve update
-stdout '^not due: last 2099-01-01T00:00:00Z, next 2099-01-01T06:00:00Z$'
+stdout '^not due: last 2099-01-01T00:00:00Z, next 2099-01-01T12:00:00Z$'
 
 exec tix cve show CVE-2026-1 --jira
 stdout '"project":"SEC"'

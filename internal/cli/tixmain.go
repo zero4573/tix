@@ -61,7 +61,7 @@ changed (state, comments or commits, CI, merge checks; read every 10
 minutes); an hourly tix sync brought new tickets; its security sweep found
 something main acts on. The service runs that sweep itself (tix cve update,
 on the host) whenever the last one recorded in the vault's
-security/.state.json is 6 hours old, so a restart of main doesn't sweep
+security/.state.json is 12 hours old, so a restart of main doesn't sweep
 again, and retries a failed one after 30 minutes. Its subcommands are how
 the session calls it:
 
@@ -274,7 +274,7 @@ func mainServeCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&idle, "idle-after", 30*time.Minute, "wake main when a working ticket's session sits idle this long")
 	cmd.Flags().DurationVar(&prPoll, "pr-poll", 10*time.Minute, "how often the watched pull requests are read")
 	cmd.Flags().DurationVar(&syncEach, "sync-each", time.Hour, "how often tix sync runs (main is woken only for new tickets)")
-	cmd.Flags().DurationVar(&sweepEach, "cve-sweep-each", 6*time.Hour, "how old the last security sweep may get before the service runs tix cve update (0: never)")
+	cmd.Flags().DurationVar(&sweepEach, "cve-sweep-each", 12*time.Hour, "how old the last security sweep may get before the service runs tix cve update (0: never)")
 	cmd.Flags().DurationVar(&tick, "tick", 0, "also wake main this often with no event (0: never)")
 	return cmd
 }

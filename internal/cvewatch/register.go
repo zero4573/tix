@@ -371,9 +371,31 @@ func (st *State) rekey(id string, aliases []string, idx map[string]string, today
 		r.ID = id
 		r.note(today, "renamed from "+old)
 		st.Rows[id] = r
+		st.Told, st.Pending = renameTokens(st.Told, old, id), renameTokens(st.Pending, old, id)
 		return r
 	}
 	return nil
+}
+
+func renameTokens(tokens []string, old, id string) []string {
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if need, ok := strings.CutSuffix(t, " "+old); ok {
+			t = need + " " + id
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func findingIDs(fs []Finding) map[string]string {
+	out := map[string]string{}
+	for _, f := range fs {
+		for _, a := range append([]string{f.ID}, f.Aliases...) {
+			out[a] = f.ID
+		}
+	}
+	return out
 }
 
 func findingStatus(f Finding) string {
@@ -436,8 +458,12 @@ func (st *State) Merge(rep Report, now time.Time, every time.Duration) Delta {
 			change(prev, "fix withdrawn")
 		}
 	}
+	asFinding := findingIDs(rep.Findings)
 	for i := range rep.Watch {
 		w := rep.Watch[i]
+		if _, ok := asFinding[w.ID]; ok {
+			continue
+		}
 		if !ValidID(w.ID) {
 			d.Skips = append(d.Skips, Skip{"register", fmt.Sprintf("CVE ID %q isn't a valid ID: not recorded", w.ID)})
 			continue

@@ -382,3 +382,34 @@ func TestAckTakesOnlyPendingItems(t *testing.T) {
 		t.Errorf("a late ack silenced the next failure: %v (told %v)", d.Tell, st.Told)
 	}
 }
+
+func TestOneRowWhenAWatchIsAlsoAFinding(t *testing.T) {
+	st := &State{Rows: map[string]*Row{}}
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	g := finding("GHSA-aaaa-bbbb-cccc", "P1", true, true, "Dockerfile")
+	g.Aliases = []string{"DEBIAN-CVE-2026-5"}
+	c := finding("CVE-2026-5", "P1", true, true, "go.mod")
+	w := Watch{ID: "CVE-2026-5", Product: "nginx", Priority: "P1", Major: true, Severity: "CRITICAL"}
+	alias := Watch{ID: "DEBIAN-CVE-2026-5", Product: "nginx", Priority: "P1", Severity: "CRITICAL"}
+	d := st.Merge(report("1", []Finding{g, c}, []Watch{w, alias}), now, 12*time.Hour)
+	if len(st.Rows) != 2 || st.Rows["CVE-2026-5"].Kind != KindFinding || st.Rows["DEBIAN-CVE-2026-5"] != nil {
+		t.Errorf("a watch duplicated a finding of the same sweep: %s %v", whats(d), st.ids())
+	}
+}
+
+func TestRenamedRowIsNotToldAgain(t *testing.T) {
+	st := &State{Rows: map[string]*Row{}}
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	g := finding("GHSA-aaaa-bbbb-cccc", "P1", true, false, "go.mod")
+	d := st.Merge(report("1", []Finding{g}, nil), now, 12*time.Hour)
+	if strings.Join(d.Tell, ",") != "ticket GHSA-aaaa-bbbb-cccc" {
+		t.Fatalf("tell %v", d.Tell)
+	}
+	st.Ack(d.Tell)
+	c := finding("CVE-2026-1", "P1", true, false, "go.mod")
+	c.Aliases = []string{"GHSA-aaaa-bbbb-cccc"}
+	d = st.Merge(report("2", []Finding{c}, nil), now.Add(13*time.Hour), 12*time.Hour)
+	if len(d.Tell) != 0 || strings.Join(st.Told, ",") != "ticket CVE-2026-1" {
+		t.Errorf("the renamed row was told again: %v, told %v", d.Tell, st.Told)
+	}
+}

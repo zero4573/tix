@@ -116,11 +116,11 @@ func TestCVEUpdateSweepsOncePerInterval(t *testing.T) {
 		t.Errorf("a second update within the interval swept: %v %d\n%s", err, osvCalls, out)
 	}
 	out, _ = runCVE(t, d, "due")
-	if !strings.HasPrefix(out, "not-due last ") || !strings.HasSuffix(strings.TrimSpace(out), "next 2026-11-20T18:00:00Z") {
+	if !strings.HasPrefix(out, "not-due last ") || !strings.HasSuffix(strings.TrimSpace(out), "next 2026-11-21T00:00:00Z") {
 		t.Errorf("due: %q", out)
 	}
 
-	clock = clock.Add(time.Hour)
+	clock = clock.Add(7 * time.Hour)
 	out, err = runCVE(t, d, "update", "--json")
 	var res cvewatch.UpdateResult
 	if err != nil || json.Unmarshal([]byte(out), &res) != nil || !res.Due || osvCalls != 2 || strings.Join(res.Tell, ",") != "ticket CVE-2026-0001" || len(res.Actions) != 1 {
@@ -150,7 +150,7 @@ func TestCVEAckRecordsDeliveredItems(t *testing.T) {
 	if err != nil || strings.Join(st.Told, ",") != "ticket CVE-2026-0001" {
 		t.Errorf("told %v (%v)", st.Told, err)
 	}
-	clock = clock.Add(7 * time.Hour)
+	clock = clock.Add(13 * time.Hour)
 	out, _ := runCVE(t, d, "update", "--json")
 	var res cvewatch.UpdateResult
 	if json.Unmarshal([]byte(out), &res) != nil || len(res.Tell) != 0 || len(res.Actions) != 1 {

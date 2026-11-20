@@ -1,7 +1,7 @@
 # The security sweep (main)
 
 The host service runs the sweep itself (`tix cve update`): when main starts and whenever the
-last sweep recorded in `security/.state.json` is 6 hours old, never twice within that
+last sweep recorded in `security/.state.json` is 12 hours old, never twice within that
 (`tix cve due` prints the last and next times). It writes `security/security.md` (Needs
 action, Resolvable, Unresolvable, Watch, Resolved, Unscanned, Log) and
 `security/advisories/<ID>.md`, and wakes you only when something needs you:

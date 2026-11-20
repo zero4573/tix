@@ -18,7 +18,7 @@ import (
 
 const (
 	cveLockOwner     = "tix-cve"
-	defaultCVEEvery  = 6 * time.Hour
+	defaultCVEEvery  = 12 * time.Hour
 	securityDirName  = "security"
 	cveTimeLayout    = time.RFC3339
 	cveNotDuePrefix  = "not due"
@@ -49,7 +49,7 @@ func cveUpdateCmd(d cveDeps) *cobra.Command {
 	var force, asJSON bool
 	var days int
 	cmd := &cobra.Command{
-		Use:   "update [--every 6h] [--force] [--days N] [--json]",
+		Use:   "update [--every 12h] [--force] [--days N] [--json]",
 		Short: "Sweep when due and write the vault's security register",
 		Long: `Runs the sweep (tix cve sweep) when the last one is at least --every old
 (--force: now), merges it into <vault>/security/.state.json and writes
@@ -153,7 +153,7 @@ func printUpdate(out io.Writer, r cvewatch.UpdateResult) {
 func cveDueCmd(d cveDeps) *cobra.Command {
 	var every time.Duration
 	cmd := &cobra.Command{
-		Use:   "due [--every 6h]",
+		Use:   "due [--every 12h]",
 		Short: "When the last sweep ran and when the next is due",
 		Long: `Prints "<due|not-due> last <time> next <time>" from security/.state.json
 (never swept: "due last - next -"). Reads only the state; no network.`,

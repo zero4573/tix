@@ -1,0 +1,57 @@
+# tix vault note set-section <task> '## Report' from a folder that is not the
+# ticket workspace: a task agent's shell doesn't always start there
+mkdir home/Documents/Obsidian/a/.obsidian home/Documents/Obsidian/a/inbox
+mkdir home/Documents/Obsidian/a/tickets/MAN-1/tasks home/Documents/Obsidian/a/tickets/MAN-2/tasks
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-2/MAN-2.md
+cp task.md home/Documents/Obsidian/a/tickets/MAN-1/tasks/MAN-1-01-retry.md
+cp task.md home/Documents/Obsidian/a/tickets/MAN-2/tasks/MAN-2-01-retry.md
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-a/github/acme/billing
+exec tix ws add MAN-1 github-acme-billing --base main --desc report
+
+# from the main clone (no workspace.json above it): the report is written
+cd home/Projects/repo-a/github/acme/billing
+stdin $WORK/report.txt
+exec tix vault note set-section MAN-1-01-retry '## Report'
+stdout 'wrote tickets/MAN-1/tasks/MAN-1-01-retry.md'
+grep '^Task 01: done$' $WORK/home/Documents/Obsidian/a/tickets/MAN-1/tasks/MAN-1-01-retry.md
+
+# only the report: another section of the task file, and the ticket note, stay refused
+stdin $WORK/report.txt
+! exec tix vault note set-section MAN-1-01-retry '## Goal'
+stderr 'outside a ticket workspace agents write only inside inbox/'
+stdin $WORK/report.txt
+! exec tix vault note append MAN-1 Notes --create 2
+stderr 'outside a ticket workspace'
+
+# a ticket without a workspace: refused
+stdin $WORK/report.txt
+! exec tix vault note set-section MAN-2-01-retry '## Report'
+stderr 'outside a ticket workspace'
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+---
+-- task.md --
+---
+id: 01
+type: task
+---
+## Goal
+Retry the upload.
+
+## Report
+-- report.txt --
+Task 01: done
+-- gitconfig --
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+-- seed/README.md --
+# billing

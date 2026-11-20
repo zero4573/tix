@@ -1,0 +1,69 @@
+# Freshness: notes tix writes are re-indexed by the command that wrote them;
+# without an index nothing is created.
+mkdir v/.obsidian
+mkdir v/inbox
+mkdir v/templates
+cp ticket-manual.md v/templates/ticket-manual.md
+mkdir v/knowledge-base
+cp a.md v/inbox/a.md
+cp b.md v/inbox/b.md
+env TIX_EMBEDDER=stub
+env TIX_VAULT=$WORK/v
+
+# No index: writes leave no .tix behind.
+stdin plain.txt
+exec tix vault note set-section inbox/b.md Sec
+! exists v/.tix
+exec tix vault links move v inbox/a.md knowledge-base
+! exists v/.tix
+exec tix vault links move v knowledge-base/a.md inbox
+
+exec tix vault index
+
+# tix vault links move.
+exec tix vault links move v inbox/a.md knowledge-base
+exec tix vault index --json
+stdout '"changed":0'
+grep '"path":"knowledge-base/a.md"' v/.tix/index/notes.jsonl
+! grep '"path":"inbox/a.md"' v/.tix/index/notes.jsonl
+
+# tix vault note set-section.
+stdin fresh.txt
+exec tix vault note set-section inbox/b.md Sec
+grep 'freshly written words' v/.tix/index/chunks.jsonl
+exec tix vault index --json
+stdout '"changed":0'
+
+# A sync-style write: tix new.
+exec tix new 'Fresh ticket'
+exec tix vault index --json
+stdout '"changed":0'
+grep 'tickets/manual/MAN-1/MAN-1.md' v/.tix/index/notes.jsonl
+
+-- ticket-manual.md --
+---
+title: {{title}}
+summary:
+created: {{date}}
+status: new
+ticket-type: dev
+priority:
+source: manual
+---
+# {{title}}
+
+## Description
+-- plain.txt --
+plain edit
+-- fresh.txt --
+freshly written words
+-- a.md --
+# A
+
+Text of a.
+-- b.md --
+# B
+
+## Sec
+
+old words

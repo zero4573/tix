@@ -1,0 +1,146 @@
+# tix vault init / configure without a terminal (as --defaults)
+exec tix vault init demo
+stdout 'created vault .*/Obsidian/demo'
+stdout '^  \+ AGENTS.md$'
+stdout '^  \+ templates/ticket-manual.md$'
+exists home/Documents/Obsidian/demo/.scaffold.json
+! stdout obsidian-types.json
+stderr 'the Tasks plugin wasn.t installed'
+! stderr 'programs.tix.obsidian.vaults'
+stdout '^  \+ templates/group.md$'
+# the wave workflow's ticket-folder templates, without checkboxes
+stdout '^  \+ templates/task.md$'
+stdout '^  \+ templates/board.md$'
+stdout '^  \+ templates/plan.md$'
+stdout '^  \+ templates/review.md$'
+stdout '^  \+ templates/backlog.md$'
+! grep '- \[ \]' home/Documents/Obsidian/demo/templates/task.md
+! grep '#role/' home/Documents/Obsidian/demo/templates/ticket-manual.md
+grep '#ticket/<phase>' home/Documents/Obsidian/demo/templates/ticket-synced.md
+grep '^## Ticket workflow$' home/Documents/Obsidian/demo/AGENTS.md
+# the PO's relay and board keys, the task's skills, and learning topics
+stdout '^  \+ templates/relay.md$'
+! grep '- \[ \]' home/Documents/Obsidian/demo/templates/relay.md
+grep '^## Closed$' home/Documents/Obsidian/demo/templates/relay.md
+grep '^lead: none$' home/Documents/Obsidian/demo/templates/board.md
+grep '^po:$' home/Documents/Obsidian/demo/templates/board.md
+grep '^skills: \[\]$' home/Documents/Obsidian/demo/templates/task.md
+stdout '^  \+ templates/learning-topic.md$'
+stdout '^  \+ templates/lesson.md$'
+stdout '^  \+ templates/learning-record.md$'
+stdout '^  \+ templates/learning-reference.md$'
+grep '^## Mission$' home/Documents/Obsidian/demo/templates/learning-topic.md
+grep '^superseded-by: ""$' home/Documents/Obsidian/demo/templates/learning-record.md
+grep 'tix teach' home/Documents/Obsidian/demo/AGENTS.md
+exists home/Documents/Obsidian/demo/learning
+grep '"skills": "multitext"' home/Documents/Obsidian/demo/.obsidian/types.json
+stdout '^  \+ projects.base$'
+! stdout 'projects/system'
+exists home/Documents/Obsidian/demo/projects
+! exists home/Documents/Obsidian/demo/projects/system
+exists home/Documents/Obsidian/demo/tickets.base
+grep '"folder": "templates"' home/Documents/Obsidian/demo/.obsidian/templates.json
+grep '"bases": true' home/Documents/Obsidian/demo/.obsidian/core-plugins.json
+grep '"covered-by": "text"' home/Documents/Obsidian/demo/.obsidian/types.json
+grep '"depends-on": "multitext"' home/Documents/Obsidian/demo/.obsidian/types.json
+grep '"groups": "multitext"' home/Documents/Obsidian/demo/.obsidian/types.json
+grep '"owns": "multitext"' home/Documents/Obsidian/demo/.obsidian/types.json
+! grep '"services"' home/Documents/Obsidian/demo/.obsidian/types.json
+grep '"workRoot": "~/Projects/work-demo"' home/Documents/Obsidian/demo/.workflow.json
+grep '"projectsRoot": "~/Projects/repo-demo"' home/Documents/Obsidian/demo/.workflow.json
+grep '"idPrefix": "MAN"' home/Documents/Obsidian/demo/tickets/.sources.json
+grep '"servicenow"' home/Documents/Obsidian/demo/tickets/.sources.json
+
+# re-run: nothing overwritten, settings kept; the user's types win
+cp mytypes.json home/Documents/Obsidian/demo/.obsidian/types.json
+cp mine.md home/Documents/Obsidian/demo/AGENTS.md
+exec tix vault init demo
+stdout 'added 0 file\(s\), kept [0-9]+ existing'
+stdout 'kept .*/demo/.workflow.json \(tix vault configure --section locations to change it\)'
+grep '^mine$' home/Documents/Obsidian/demo/AGENTS.md
+grep '"status": "number"' home/Documents/Obsidian/demo/.obsidian/types.json
+grep '"blocked": "checkbox"' home/Documents/Obsidian/demo/.obsidian/types.json
+! exists home/Documents/Obsidian/demo/projects/system
+
+# a vault set up before 0.1.0: init adds what's new and leaves what it doesn't ship alone
+mkdir home/Documents/Obsidian/old/.obsidian home/Documents/Obsidian/old/projects/system
+cp old-system.md home/Documents/Obsidian/old/projects/system/system.md
+mkdir home/Documents/Obsidian/old/templates
+cp mine.md home/Documents/Obsidian/old/AGENTS.md
+cp old-project.md home/Documents/Obsidian/old/templates/project.md
+cp old-types.json home/Documents/Obsidian/old/.obsidian/types.json
+exec tix vault init old
+stdout '^  \+ templates/group.md$'
+! stdout 'projects/system'
+cmp home/Documents/Obsidian/old/projects/system/system.md old-system.md
+# its old templates and AGENTS.md stay as they are; its old property types
+# are kept, and the new ones added
+cmp home/Documents/Obsidian/old/AGENTS.md mine.md
+cmp home/Documents/Obsidian/old/templates/project.md old-project.md
+grep '"services": "multitext"' home/Documents/Obsidian/old/.obsidian/types.json
+grep '"depends-on": "multitext"' home/Documents/Obsidian/old/.obsidian/types.json
+grep '"groups": "multitext"' home/Documents/Obsidian/old/.obsidian/types.json
+! exists home/Documents/Obsidian/old/projects/system/service-map.md
+
+# a second vault gets folders of its own
+exec tix vault init other
+grep '"projectsRoot": "~/Projects/repo-other"' home/Documents/Obsidian/other/.workflow.json
+# a default that overlaps another vault's chosen folder is refused
+cp other-workflow.json home/Documents/Obsidian/other/.workflow.json
+! exec tix vault init third
+stderr 'projectsRoot ~/Projects/repo-third overlaps other.s workRoot ~/Projects/repo-third'
+stderr 'overlapping folders \(--allow-overlap'
+
+! exec tix vault configure demo --section nope
+stderr 'no section .nope.'
+! exec tix vault configure nope
+stderr 'no vault named .nope.'
+rm home/Documents/Obsidian/demo/tickets/.sources.json
+exec tix vault configure demo --section sources
+stdout 'wrote tickets/.sources.json \(jira: false, manual: true\)'
+
+exec tix vault lock status home/Documents/Obsidian/demo
+stdout '^unlocked$'
+exec tix vault lock acquire home/Documents/Obsidian/demo PROJ-1
+exec tix vault lock status home/Documents/Obsidian/demo
+stdout '^locked by .PROJ-1.$'
+! exec tix vault lock release home/Documents/Obsidian/demo PROJ-2
+stderr 'held by .PROJ-1., not .PROJ-2.'
+exec tix vault lock release home/Documents/Obsidian/demo PROJ-1
+! exec tix vault lock run home/Documents/Obsidian/demo PROJ-3 -- sh -c 'cat $WORK/home/Documents/Obsidian/demo/.vault.lock.d/owner; exit 3'
+stdout '^PROJ-3$'
+! exists home/Documents/Obsidian/demo/.vault.lock.d
+! exec tix vault lock status home
+stderr 'not an Obsidian vault'
+
+cp note.md home/Documents/Obsidian/demo/inbox/note.md
+! exec tix vault links check home/Documents/Obsidian/demo inbox/note.md
+stdout '^inbox/note.md:1: unresolved link \[\[nowhere\]\]$'
+exec tix vault links move home/Documents/Obsidian/demo inbox/note.md knowledge-base
+stdout '^knowledge-base/note.md$'
+! exec tix vault links move home/Documents/Obsidian/demo knowledge-base/note.md AGENTS.md
+stderr 'destination exists'
+
+-- other-workflow.json --
+{"workRoot": "~/Projects/repo-third", "projectsRoot": "~/Projects/repo-other"}
+-- mytypes.json --
+{"types": {"status": "number"}}
+-- mine.md --
+mine
+-- old-system.md --
+---
+title: system
+type: project
+services: [a, b]
+---
+# system
+See [[service-map]].
+-- old-project.md --
+---
+type: project
+---
+Part of [[system]], see [[service-map]].
+-- old-types.json --
+{"types": {"services": "multitext"}}
+-- note.md --
+[[nowhere]] and [[AGENTS]]

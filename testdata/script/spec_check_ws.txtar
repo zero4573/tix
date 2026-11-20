@@ -1,0 +1,69 @@
+# tix spec check --ws: evidence and tests citations against the ticket's
+# worktrees, so a stale file:line shows before the branch is merged
+mkdir home/Documents/Obsidian/a/.obsidian
+mkdir home/Documents/Obsidian/a/tickets/MAN-1
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-a/github/acme/billing
+exec tix ws add MAN-1 github-acme-billing --base main --desc refs
+env R=home/Projects/work-a/MAN-1/github-acme-billing
+
+exec tix spec check
+stdout 'no findings'
+exec tix spec check --ws MAN-1
+stdout 'no findings'
+
+# the ticket branch moves the cited code: only --ws sees it
+cp shorter.go $R/src/orders.go
+! exec tix spec check --ws MAN-1
+stdout 'stale-ref: evidence src/orders.go:3 of REQ-ORD-1: the file has 1 lines'
+stdout 'tix spec check: 1 findings'
+exec tix spec check
+stdout 'no findings'
+
+! exec tix spec check --ws NOPE-9
+stderr 'no such workspace'
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+---
+-- gitconfig --
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+-- shorter.go --
+package src
+-- seed/src/orders.go --
+package src
+
+func Create() {}
+-- seed/src/orders_test.go --
+package src
+
+// REQ-ORD-1
+-- seed/specs/orders/spec.md --
+---
+capability: orders
+prefix: ORD
+---
+# Orders
+
+## Purpose
+Orders.
+
+## Requirements
+
+### REQ-ORD-1 · Create
+status: inferred
+evidence: src/orders.go:3
+tests: src/orders_test.go:3
+The system SHALL create an order.
+
+#### Scenario: create
+- WHEN a user orders
+- THEN an order exists

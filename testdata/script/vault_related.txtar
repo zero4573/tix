@@ -1,0 +1,55 @@
+# tix vault related: stub embedder, linked notes left out, --include-linked,
+# --chunks, keyword fallback without a model, not found and ambiguous exits.
+mkdir home/Documents/Obsidian/v/.obsidian
+mkdir home/Documents/Obsidian/v/a
+mkdir home/Documents/Obsidian/v/b
+cp acme.md home/Documents/Obsidian/v/a/acme.md
+cp twin.md home/Documents/Obsidian/v/a/twin.md
+cp twin.md home/Documents/Obsidian/v/b/twin.md
+cp linked.md home/Documents/Obsidian/v/linked.md
+cp sibling.md home/Documents/Obsidian/v/sibling.md
+
+env TIX_EMBEDDER=stub
+
+exec tix vault related acme
+stdout '^1\. sibling\.md  \([0-9.]+\)$'
+! stdout 'linked\.md'
+! stdout 'a/acme\.md'
+
+exec tix vault related a/acme.md --include-linked --json
+stdout '"note":"acme","path":"a/acme.md","keyword_only":false,"results":\['
+stdout '"path":"linked.md","score":[0-9.]+,"linked":true'
+
+exec tix vault related acme --chunks --json --no-update
+stdout '"heading":\["Sibling"\],"start_line":\d+'
+
+# Errors exit 2.
+! exec tix vault related nothere
+stderr 'no note'
+! exec tix vault related twin
+stderr 'ambiguous: a/twin.md, b/twin.md'
+! exec tix vault related
+
+# No model: BM25 on the note's name and headings.
+env TIX_EMBEDDER=none
+rm home/Documents/Obsidian/v/.tix
+exec tix vault related acme --json
+stdout '"keyword_only":true'
+stdout '"path":"sibling\.md"'
+
+-- acme.md --
+# Acme
+
+Giraffe savanna migration, see [[linked]].
+-- linked.md --
+# Linked
+
+Giraffe savanna migration too.
+-- sibling.md --
+# Sibling
+
+Giraffe savanna acme migration.
+-- twin.md --
+# Twin
+
+Nothing.

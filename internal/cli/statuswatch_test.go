@@ -1,0 +1,107 @@
+package cli
+
+import (
+	"bytes"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestIntervalFlag(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"1s": time.Second, "2s": 2 * time.Second, "1m": time.Minute, "1.5s": 1500 * time.Millisecond,
+	} {
+		var f intervalFlag
+		if err := f.Set(in); err != nil {
+			t.Errorf("Set(%q): %v", in, err)
+		} else if time.Duration(f) != want {
+			t.Errorf("Set(%q) = %v, want %v", in, time.Duration(f), want)
+		}
+	}
+	for _, in := range []string{"500ms", "999ms", "0", "0s", "-1s", "abc", "2", ""} {
+		f := intervalFlag(2 * time.Second)
+		err := f.Set(in)
+		if err == nil {
+			t.Errorf("Set(%q) accepted", in)
+			continue
+		}
+		if !strings.Contains(err.Error(), "at least 1s") {
+			t.Errorf("Set(%q): %q doesn't name the minimum", in, err)
+		}
+		if time.Duration(f) != 2*time.Second {
+			t.Errorf("Set(%q) changed the value to %v", in, time.Duration(f))
+		}
+	}
+	if f := intervalFlag(2 * time.Second); f.String() != "2s" || f.Type() != "duration" {
+		t.Errorf("String/Type = %q/%q", f.String(), f.Type())
+	}
+}
+
+func TestIntervalFlagTooLong(t *testing.T) {
+	for _, in := range []string{"9999999h", "+9999999h", "2562048h", "1h9999999999999999999ns", "99999999999999999999s"} {
+		f := intervalFlag(2 * time.Second)
+		err := f.Set(in)
+		if err == nil {
+			t.Errorf("Set(%q) accepted", in)
+			continue
+		}
+		if msg := err.Error(); !strings.Contains(msg, "too long") || !strings.Contains(msg, "at most 2562047h47m16.854775807s") || strings.Contains(msg, "at least") {
+			t.Errorf("Set(%q): %q", in, msg)
+		}
+		if time.Duration(f) != 2*time.Second {
+			t.Errorf("Set(%q) changed the value to %v", in, time.Duration(f))
+		}
+	}
+	f := intervalFlag(2 * time.Second)
+	if err := f.Set("2562047h"); err != nil {
+		t.Errorf("Set(2562047h): %v", err)
+	}
+	for _, in := range []string{"-9999999h", "9999999x", "h", "1.2.3s"} {
+		if err := f.Set(in); err == nil || !strings.Contains(err.Error(), "at least 1s") {
+			t.Errorf("Set(%q): %v, want the at-least-1s message", in, err)
+		}
+	}
+}
+
+func TestWriteStatus(t *testing.T) {
+	var b bytes.Buffer
+	err := writeStatus(&b, statusView{
+		header: "Vault a (sessions run in their own terminal)",
+		rows: []statusRow{
+			{0, "MAN-1", []string{"MAN-1", "manual", "needs-input", "new", "2 (1 dirty)", "10:00:00", "Which base branch?"}},
+			{3, "MAN-22", []string{"MAN-22", "jira", "-", "in-progress", "0 (0 dirty)", "", ""}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Vault a (sessions run in their own terminal)\n" +
+		"TICKET  SOURCE  AGENT        STATUS       REPOS        SINCE     WAITING ON\n" +
+		"MAN-1   manual  needs-input  new          2 (1 dirty)  10:00:00  Which base branch?\n" +
+		"MAN-22  jira    -            in-progress  0 (0 dirty)            \n"
+	if got := b.String(); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+
+	b.Reset()
+	if err := writeStatus(&b, statusView{header: "Vault a (sessions run in their own terminal)", empty: "No ticket workspaces under /w (start one with tix start <ID>)."}); err != nil {
+		t.Fatal(err)
+	}
+	want = "Vault a (sessions run in their own terminal)\nNo ticket workspaces under /w (start one with tix start <ID>).\n"
+	if got := b.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestLineCollector(t *testing.T) {
+	var c lineCollector
+	c.Write([]byte("tix: a: ignoring x\ntix: a: ignoring x\n"))
+	c.Write([]byte("tix: b: ignoring y\n"))
+	if got, want := c.drain(), []string{"tix: a: ignoring x", "tix: b: ignoring y"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := c.drain(); got != nil {
+		t.Errorf("drained twice: %q", got)
+	}
+}

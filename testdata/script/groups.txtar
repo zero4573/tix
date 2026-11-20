@@ -1,0 +1,247 @@
+# tix vault groups: which projects work together, read-only
+mkdir v/.obsidian v/projects/notes v/projects/empty v/projects/alpha v/projects/beta v/projects/p1 v/projects/p2 v/projects/cli v/projects/nix v/projects/web
+cp alpha.md v/projects/alpha/alpha.md
+cp beta.md v/projects/beta/beta.md
+cp p1.md v/projects/p1/p1.md
+cp p2.md v/projects/p2/p2.md
+cp cli.md v/projects/cli/cli.md
+cp nix.md v/projects/nix/nix.md
+cp web.md v/projects/web/web.md
+cp other.md v/projects/notes/notes.md
+
+exec tix vault groups v
+stdout '^cluster 1: projects cli, nix$'
+stdout '^  nix depends-on cli$'
+stdout '^cluster 2: groups alpha; projects p1, p2$'
+stdout '^  bridges: none$'
+stdout '^standalone: web$'
+stdout '^warning: group beta has no members \(projects/beta/beta.md\)$'
+! stdout notes
+! stdout error
+
+exec tix vault groups v nix
+stdout '^nix \(project\)$'
+stdout '^  depends-on: cli$'
+stdout '^  groups: none$'
+stdout '^  cluster: projects cli, nix$'
+exec tix vault groups v CLI
+stdout '^cli \(project\)$'
+stdout '^  used-by: nix$'
+exec tix vault groups v alpha web
+stdout '^alpha \(group\)$'
+stdout '^  members: p1, p2$'
+stdout '^  cluster: groups alpha; projects p1, p2$'
+stdout '^web \(project\)$'
+stdout '^  cluster: standalone$'
+# a name without a note (a repo not saved yet) is standalone, not an error
+exec tix vault groups v nope
+stdout '^nope: no note \(standalone\)$'
+
+exec tix vault groups v --json
+stdout '"standalone": \['
+stdout '"dependsOn": \['
+stdout '"members": \['
+exec tix vault groups v nix --json
+stdout '"nix": \{'
+! stdout '"web"'
+stdout '"noNote": \[\]'
+exec tix vault groups v nix new-repo --json
+stdout '"noNote": \[\n\s+"new-repo"'
+stdout '"standalone": \[\n\s+"new-repo"'
+
+# --check: warnings pass, errors fail
+exec tix vault groups v --check
+cp web-bad.md v/projects/web/web.md
+exec tix vault groups v
+stdout '^error: groups links \[\[cli\]\], which is a project, not a group \(projects/web/web.md\)$'
+! exec tix vault groups v --check
+stdout '^error: groups links \[\[cli\]\]'
+! exec tix vault groups v web --check
+stdout '^web \(project\)$'
+stdout '^error: '
+! exec tix vault groups v --check --json
+stdout '"error": true'
+
+# no project notes; not a vault
+mkdir empty/.obsidian
+exec tix vault groups empty
+stdout '^no projects$'
+! exec tix vault groups nowhere
+stderr 'not an Obsidian vault'
+! exec tix vault groups v/projects
+stderr 'not an Obsidian vault'
+
+# a name without a note among others: the others are still shown, exit 0
+exec tix vault groups v nix nope --check
+stdout '^  depends-on: cli$'
+stdout '^nope: no note \(standalone\)$'
+! stderr .
+# --check with names: only the named notes' problems count
+exec tix vault groups v nix --check
+stdout '^  depends-on: cli$'
+! stdout '^error'
+! exec tix vault groups v nix web --check
+stdout '^error: groups links \[\[cli\]\]'
+exec tix vault groups v nix --json
+stdout '"problems": \[\]'
+# a problem is the linking note's: web's bad groups link to cli doesn't
+# fail a check of cli, and only names without a note pass
+exec tix vault groups v cli --check
+! stdout '^error'
+exec tix vault groups v ghost --check
+stdout '^ghost: no note \(standalone\)$'
+# an empty group named: a warning, exit 0; names keep the note's spelling
+exec tix vault groups v BETA --check
+stdout '^beta \(group\)$'
+stdout '^warning: group beta has no members'
+exec tix vault groups v WEB --json
+stdout '"web": \{'
+stdout '"noNote": \[\]'
+
+# a vault set up before 0.1.0: its old system note is a standalone project,
+# a quoted type counts, and an old services property means nothing
+mkdir old/.obsidian old/projects/system old/projects/infra old/projects/box
+cp old-system.md old/projects/system/system.md
+cp infra.md old/projects/infra/infra.md
+cp box.md old/projects/box/box.md
+exec tix vault groups old
+stdout '^cluster 1: groups infra; projects box$'
+stdout '^standalone: system$'
+! stdout 'warning|error'
+exec tix vault groups old --check
+
+# bridges: one per line, since a bridge's own text has commas
+mkdir br/.obsidian br/projects/ga br/projects/gb br/projects/gc br/projects/q br/projects/r
+cp ga.md br/projects/ga/ga.md
+cp gb.md br/projects/gb/gb.md
+cp ga.md br/projects/gc/gc.md
+cp q.md br/projects/q/q.md
+cp r.md br/projects/r/r.md
+exec tix vault groups br
+stdout '^cluster 1: groups ga, gb, gc; projects q, r$'
+stdout '^  bridges:$'
+stdout '^    q is in groups ga, gb$'
+stdout '^    r \(gc\) depends-on q \(ga, gb\)$'
+
+# "null", "~" and comments mean what YAML says: no links, or the link alone
+mkdir nl/.obsidian nl/projects/solo nl/projects/tilde nl/projects/dep
+cp solo.md nl/projects/solo/solo.md
+cp tilde.md nl/projects/tilde/tilde.md
+cp dep.md nl/projects/dep/dep.md
+exec tix vault groups nl --check
+stdout '^cluster 1: projects dep, solo$'
+stdout '^standalone: tilde$'
+! stdout error
+
+-- alpha.md --
+---
+title: alpha
+type: group
+---
+-- beta.md --
+---
+title: beta
+type: group
+---
+-- p1.md --
+---
+title: p1
+type: project
+groups: ["[[alpha]]"]
+depends-on: []
+---
+-- p2.md --
+---
+title: p2
+type: project
+groups:
+  - "[[alpha|Alpha]]"
+depends-on:
+  - "[[p1#API]]"
+---
+-- cli.md --
+---
+title: cli
+type: project
+---
+-- nix.md --
+---
+title: nix
+type: project
+depends-on: ["[[cli]]"]
+---
+-- web.md --
+---
+title: web
+type: project
+groups: []
+---
+-- web-bad.md --
+---
+title: web
+type: project
+groups: ["[[cli]]"]
+---
+-- other.md --
+---
+title: notes
+type: reference
+depends-on: ["[[nowhere]]"]
+---
+-- old-system.md --
+---
+title: system
+type: project
+tags: [project, system, microservices]
+services: ["[[box]]"]
+---
+# system
+See [[service-map]].
+-- infra.md --
+---
+title: infra
+type: "group"
+---
+-- box.md --
+---
+title: box
+type: project
+groups:
+- "[[infra]]"
+---
+-- ga.md --
+---
+type: group
+---
+-- gb.md --
+---
+type: group
+---
+-- q.md --
+---
+type: project
+groups: ["[[ga]]", "[[gb]]"]
+---
+-- r.md --
+---
+type: project
+groups: [[gc]]
+depends-on: "[[q]]"
+---
+-- solo.md --
+---
+type: project
+depends-on: null
+groups: [] # none yet
+---
+-- tilde.md --
+---
+type: project
+depends-on: ~
+groups: null
+---
+-- dep.md --
+---
+type: project
+depends-on: [[solo#API]] # REST
+---

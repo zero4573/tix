@@ -1,0 +1,67 @@
+mkdir home/Documents/Obsidian/a/.obsidian home/Documents/Obsidian/a/tickets/MAN-1 home/Documents/Obsidian/a/tickets/MAN-2 home/Projects/work-a/MAN-1 home/Projects/work-a/MAN-2
+expand ws1.json ws2.json
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+cp man-2.md home/Documents/Obsidian/a/tickets/MAN-2/MAN-2.md
+
+# Workspaces: MAN-1 waiting on you with its process alive, MAN-2 stale
+cp ws1.json home/Projects/work-a/MAN-1/workspace.json
+cp state-needs.json home/Projects/work-a/MAN-1/.agent-state
+cp ws2.json home/Projects/work-a/MAN-2/workspace.json
+cp state-working.json home/Projects/work-a/MAN-2/.agent-state
+exec touch -d '2 days ago' home/Projects/work-a/MAN-2/.agent-state
+mkdir home/Projects/work-a/MAN-1/repo-a/.git
+mkdir home/Projects/work-a/MAN-1/repo-b/.git
+cp empty home/Projects/work-a/MAN-1/repo-b/.dirty
+live-session home/Projects/work-a/MAN-1
+
+exec tix status
+stdout '^Vault a \(sessions run in their own terminal\)$'
+stdout '^TICKET +SOURCE +AGENT +STATUS +REPOS +SINCE +WAITING ON$'
+stdout '^MAN-1 +manual +needs-input +new +2 \(1 dirty\) +10:00:00 +Which base branch\?$'
+stdout '^MAN-2 +jira +working \(stale\) +in-progress +0 \(0 dirty\)'
+# waiting on you first
+stdout '(?s)MAN-1.*MAN-2'
+
+# open: VS Code-style editors get a multi-root workspace
+exec tix open --list
+stdout '^MAN-1\t'
+stdout '^MAN-2\t'
+env TIX_EDITOR='no-such-editor --new-window'
+! exec tix open MAN-1
+stderr 'editor .no-such-editor. not found'
+mkdir stub2
+cp $WORK/stub/editor stub2/code
+chmod 755 stub2/code
+env PATH=$WORK/stub2:$PATH
+env TIX_EDITOR='code --new-window'
+exec tix open MAN-1
+grep '^--new-window .*/work-a/MAN-1/MAN-1.code-workspace$' calls/editor
+grep '"name": "github-me-foo \(feature/MAN-1\)"' home/Projects/work-a/MAN-1/MAN-1.code-workspace
+grep '"name": "MAN-1 notes \(vault\)"' home/Projects/work-a/MAN-1/MAN-1.code-workspace
+! exec tix open MAN-9
+stderr 'MAN-9 has no workspace'
+
+-- man-1.md --
+---
+summary: First
+status: new
+source: manual
+---
+-- man-2.md --
+---
+summary: Second
+status: in-progress
+source: jira
+---
+-- ws1.json --
+{"id": "MAN-1", "vault": "$WORK/home/Documents/Obsidian/a", "repos": [
+  {"provider": "github", "owner": "me", "repo": "foo", "slug": "github-me-foo", "path": "$WORK/home/Projects/work-a/MAN-1/repo-a", "base": "main", "branch": "feature/MAN-1", "mode": "worktree"},
+  {"provider": "github", "owner": "me", "repo": "bar", "slug": "github-me-bar", "path": "$WORK/home/Projects/work-a/MAN-1/repo-b", "base": "main", "branch": "feature/MAN-1", "mode": "worktree"}
+]}
+-- ws2.json --
+{"id": "MAN-2", "vault": "$WORK/home/Documents/Obsidian/a", "repos": []}
+-- state-needs.json --
+{"state": "needs-input", "reason": "Which base branch?", "ts": "2026-10-03T10:00:00-04:00"}
+-- state-working.json --
+{"state": "working", "reason": "", "ts": "2026-10-03T09:00:00-04:00"}
+-- empty --

@@ -1,0 +1,193 @@
+# tix vault search: hybrid with the stub embedder, JSON shape, filters, budget,
+# keyword-only without a model, --mode semantic failing, usage errors.
+mkdir home/Documents/Obsidian/v/.obsidian
+mkdir home/Documents/Obsidian/v/projects/acme
+mkdir home/Documents/Obsidian/v/other
+cp acme.md home/Documents/Obsidian/v/projects/acme/acme.md
+cp crossing.md home/Documents/Obsidian/v/projects/acme/crossing.md
+cp far.md home/Documents/Obsidian/v/other/far.md
+
+env TIX_EMBEDDER=stub
+
+# No index yet: built first (progress on stderr), then searched.
+exec tix vault search zebra crossing
+stdout '^1\. projects/acme/crossing\.md › Crossing  \([0-9.]+\)$'
+stdout '^   Zebra crossing paint rules\.'
+exists home/Documents/Obsidian/v/.tix/index/meta.json
+
+exec tix vault search zebra crossing --json
+stdout '"query":"zebra crossing","mode":"hybrid","model":"stub","keyword_only":false,"results":\[\{"rank":1,"note":"crossing","path":"projects/acme/crossing.md","heading":\["Crossing"\],"start_line":\d+,"end_line":\d+,"tokens":\d+,"score":[0-9.]+,"scores":\{"semantic":[0-9.e-]+,"keyword":[0-9.]+,"link":[0-9.]+\},"excerpt":"Zebra crossing paint rules\."\}'
+! stdout '"budget"'
+! stdout '"text"'
+
+# Filters.
+exec tix vault search granite --path other --json
+stdout '"path":"other/far.md"'
+exec tix vault search zebra --path other
+! stdout 'crossing'
+exec tix vault search zebra --type project
+! stdout 'crossing'
+exec tix vault search zebra --tag misc --project acme --no-update
+stdout 'crossing\.md'
+exec tix vault search zebra --tag nope
+! stdout 'crossing'
+exec tix vault search zebra --vault v --k 1 --no-links --mode keyword --json
+stdout '"mode":"keyword"'
+
+# Budget: full text, cumulative tokens, at least one result.
+exec tix vault search zebra giraffe granite --budget 1 --json
+stdout '"text":"Quartz basalt granite\."'
+stdout '"budget":\{"limit":1,"used":\d+,"truncated":true\}'
+exec tix vault search zebra giraffe granite --budget 5000 --json
+stdout '"truncated":false'
+
+# Usage errors exit 2.
+! exec tix vault search
+! exec tix vault search x --mode bogus
+stderr 'unknown --mode'
+
+# Keyword only: no model, keyword and link search, the hint once.
+rm home/Documents/Obsidian/v/.tix
+env TIX_EMBEDDER=none
+exec tix vault search zebra --json
+stdout '"keyword_only":true'
+stdout '"path":"projects/acme/crossing.md"'
+stderr 'no embedding model, keyword search only'
+! exec tix vault search zebra --mode semantic
+stderr 'tix vault model fetch'
+
+# --no-update without an index is an error.
+rm home/Documents/Obsidian/v/.tix
+! exec tix vault search zebra --no-update
+stderr 'tix vault index'
+
+# W3 S01: a failing update with an index in place warns and searches on.
+exec tix vault index
+rm home/Documents/Obsidian/v/.tix/index.lock
+mkdir home/Documents/Obsidian/v/.tix/index.lock
+exec tix vault search zebra crossing
+stderr 'tix: vault index not updated, results may be stale'
+stdout 'projects/acme/crossing\.md'
+exec tix vault related projects/acme/crossing.md
+stderr 'tix: vault index not updated'
+rm home/Documents/Obsidian/v/.tix/index.lock
+
+# Specs: a repo's specs/ (read from its default branch), a vault-located spec,
+# --type spec, --no-specs, a refresh after an edit, a clone without specs.
+env TIX_EMBEDDER=stub
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-v/github/acme/billing
+exec git init -q -b main plain
+exec git -C plain commit -q --allow-empty -m init
+exec git clone -q plain home/Projects/repo-v/github/acme/plain
+mkdir home/Documents/Obsidian/v/projects/beta/specs/payout
+cp beta.md home/Documents/Obsidian/v/projects/beta/beta.md
+cp payout.md home/Documents/Obsidian/v/projects/beta/specs/payout/spec.md
+
+exec tix vault search quokka --json
+stdout '"path":"github-acme-billing:specs/ledger/spec\.md"'
+stdout '"note":"ledger"'
+stdout '"type":"spec","project":"github-acme-billing"'
+exists home/.cache/tix/spec-index/github-acme-billing/.tix/index/meta.json
+! exists home/.cache/tix/spec-index/github-acme-plain
+
+# A vault-located spec is a vault note.
+exec tix vault search wombat --json
+stdout '"path":"projects/beta/specs/payout/spec\.md"'
+! stdout 'github-acme-billing'
+
+# --type spec: both kinds of spec, no other note.
+exec tix vault search zebra --type spec
+! stdout 'crossing'
+exec tix vault search quokka wombat --type spec
+stdout 'github-acme-billing:specs/ledger/spec\.md'
+stdout 'projects/beta/specs/payout/spec\.md'
+exec tix vault search quokka --type spec --project github-acme-billing --json
+stdout '"project":"github-acme-billing"'
+! stdout 'payout'
+
+# --no-specs leaves both out; --path leaves the repo specs out.
+exec tix vault search quokka wombat --no-specs
+! stdout 'spec\.md'
+exec tix vault search quokka --path projects --no-update
+! stdout 'github-acme-billing'
+exec tix vault search quokka --type note
+! stdout 'ledger'
+
+# A changed tree rebuilds the index; the working tree is not read.
+exec git -C home/Projects/repo-v/github/acme/billing checkout -q -b elsewhere
+cp ledger2.md home/Projects/repo-v/github/acme/billing/specs/ledger/spec.md
+exec tix vault search platypus
+! stdout 'ledger'
+exec git -C home/Projects/repo-v/github/acme/billing checkout -q -- specs
+exec git -C home/Projects/repo-v/github/acme/billing checkout -q main
+cp ledger2.md seed/specs/ledger/spec.md
+exec git -C seed commit -q -am 'edit spec'
+exec git -C seed push -q ../remote/acme/billing.git main
+exec git -C home/Projects/repo-v/github/acme/billing fetch -q origin
+exec tix vault search platypus --json
+stdout '"path":"github-acme-billing:specs/ledger/spec\.md"'
+exec tix vault search quokka --type spec
+! stdout 'ledger'
+
+# --no-update searches what is there.
+exec tix vault search platypus --no-update --type spec
+stdout 'ledger'
+
+-- gitconfig --
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+-- seed/specs/ledger/spec.md --
+# Ledger
+
+### Requirement: Ledger entries
+The quokka ledger records every entry.
+
+#### Scenario: Entry
+- **WHEN** an entry is posted
+- **THEN** it is listed
+-- ledger2.md --
+# Ledger
+
+### Requirement: Ledger entries
+The platypus ledger records every entry.
+
+#### Scenario: Entry
+- **WHEN** an entry is posted
+- **THEN** it is listed
+-- beta.md --
+---
+type: project
+specs: vault
+---
+# Beta
+-- payout.md --
+# Payout
+
+### Requirement: Payouts
+The wombat payout runs nightly.
+-- acme.md --
+---
+type: project
+tags: [core]
+---
+# Acme
+
+Giraffe savanna migration. See [[crossing]].
+-- crossing.md --
+---
+type: note
+tags: [misc]
+projects: [acme]
+---
+# Crossing
+
+Zebra crossing paint rules.
+-- far.md --
+# Far
+
+Quartz basalt granite.

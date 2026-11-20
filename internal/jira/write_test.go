@@ -54,7 +54,7 @@ func TestCreate(t *testing.T) {
 	if key != "PROJ-8" || url != "https://x.atlassian.net/browse/PROJ-8" {
 		t.Fatalf("got %s %s", key, url)
 	}
-	last := s.Calls[len(s.Calls)-1]
+	last := s.Calls()[len(s.Calls())-1]
 	for _, want := range []string{"createJiraIssue", `"projectKey":"PROJ"`, `"issueTypeName":"Story"`, `"assignee_account_id":"acc-1"`, `"parent":"PROJ-1"`, `"cloudId":"c1"`} {
 		if !strings.Contains(last, want) {
 			t.Errorf("call %s lacks %s", last, want)
@@ -85,7 +85,7 @@ func TestCreateLostResponse(t *testing.T) {
 	if !errors.As(err, &u) {
 		t.Fatalf("err = %v, want an UnsureError", err)
 	}
-	if n := strings.Count(strings.Join(s.Calls, "\n"), "createJiraIssue"); n != 1 {
+	if n := strings.Count(strings.Join(s.Calls(), "\n"), "createJiraIssue"); n != 1 {
 		t.Errorf("createJiraIssue called %d times", n)
 	}
 }

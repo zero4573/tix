@@ -285,7 +285,7 @@ func TestLostCreateResponseWarns(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "may exist") || !strings.Contains(err.Error(), "KEY") || strings.Contains(err.Error(), "nothing changed") {
 		t.Fatalf("err = %v", err)
 	}
-	if n := strings.Count(strings.Join(s.Calls, "\n"), "createJiraIssue"); n != 1 {
+	if n := strings.Count(strings.Join(s.Calls(), "\n"), "createJiraIssue"); n != 1 {
 		t.Errorf("createJiraIssue called %d times", n)
 	}
 }

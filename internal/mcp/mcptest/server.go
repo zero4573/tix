@@ -39,7 +39,13 @@ type Server struct {
 	*httptest.Server
 	mu      sync.Mutex
 	fixture Fixture
-	Calls   []string
+	calls   []string
+}
+
+func (s *Server) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
 }
 
 func LoadFixture(file string) (Fixture, error) {
@@ -104,7 +110,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			"serverInfo": map[string]any{"name": "fake-atlassian", "version": "1"}}
 	case "tools/call":
 		args, _ := json.Marshal(req.Params.Arguments)
-		s.Calls = append(s.Calls, req.Params.Name+" "+string(args))
+		s.calls = append(s.calls, req.Params.Name+" "+string(args))
 		data, err := s.tool(req.Params.Name, req.Params.Arguments)
 		if err == nil && req.Params.Name == "createJiraIssue" && s.fixture.DropAfterCreate {
 			if hj, ok := w.(http.Hijacker); ok {

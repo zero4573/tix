@@ -1,0 +1,27 @@
+# tix main: the main session needs a terminal in a herdr pane; its
+# subcommands need the service (exit 4 without one)
+mkdir home/Documents/Obsidian/a/.obsidian home/Projects/repo-a
+
+exec tix main --help
+stdout '/tix:main'
+stdout 'tix main start <ID>'
+stdout 'never types into an\s+approval'
+
+! exec tix main
+stderr 'the session runs in this terminal, and this isn.t one'
+! exists calls/claude
+
+env HERDR_ENV=
+! exec tix-tty main
+stderr 'run tix main in a herdr pane'
+! exists calls/claude
+
+env TIX_MAIN_SOCKET=
+! exec tix main list
+stderr 'no main service in this session'
+! exec tix main start PROJ-1
+stderr 'no main service'
+
+env TIX_MAIN_SOCKET=$WORK/nothing.sock
+! exec tix main read PROJ-1
+stderr 'tix main: dial unix'

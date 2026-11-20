@@ -151,3 +151,41 @@ func TestDiffnavWithNothingChangedSaysSo(t *testing.T) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
+
+func TestPatchShowsARenameAsADeleteAndAnAddDiffnavCanParse(t *testing.T) {
+	r := repoWithChanges(t)
+	git(t, r.Dir, "mv", "kept.txt", "moved.txt")
+	write(t, r.Dir, "moved.txt", "one\n")
+	var b bytes.Buffer
+	if err := Patch(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if strings.Contains(out, "rename from") {
+		t.Errorf("patch has an unprefixed rename header:\n%s", out)
+	}
+	for _, want := range []string{"--- a/acme-billing/kept.txt\n", "+++ b/acme-billing/moved.txt\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("patch lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFailingDiffnavHandsTheTerminalBackAndSaysWhy(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "diffnav")
+	write(t, filepath.Dir(bin), "diffnav", "#!/bin/sh\ncat >/dev/null\nprintf '\\033[?1049h'\necho 'Error: gitdiff: bad header' >&2\nexit 1\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := (Diffnav{Bin: bin}).Show([]Repo{repoWithChanges(t)}, Options{Stdout: &stdout, Stderr: &stderr})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.HasSuffix(stdout.String(), terminalReset) {
+		t.Errorf("stdout does not end with the terminal reset: %q", stdout.String())
+	}
+	if stderr.String() != "Error: gitdiff: bad header\n" {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}

@@ -106,7 +106,8 @@ func untracked(dir string) []string {
 }
 
 func Patch(w io.Writer, r Repo) error {
-	prefix := []string{"--no-ext-diff", "--no-color", "--src-prefix=a/" + r.Name + "/", "--dst-prefix=b/" + r.Name + "/"}
+	// diffnav's parser (go-gitdiff) rejects git's "rename from" lines, which carry no prefix.
+	prefix := []string{"--no-ext-diff", "--no-color", "--no-renames", "--src-prefix=a/" + r.Name + "/", "--dst-prefix=b/" + r.Name + "/"}
 	tracked := gitx.CommandIn(r.Dir, append(append([]string{"--no-pager", "diff"}, prefix...), r.MergeBase)...)
 	tracked.Stdout = w
 	if err := tracked.Run(); err != nil {

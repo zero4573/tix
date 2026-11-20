@@ -36,6 +36,8 @@ vault (tix vault default; else the only vault).`,
 		openCmd(),
 
 		wsCmd(),
+
+		specCmd(),
 	)
 	return root
 }

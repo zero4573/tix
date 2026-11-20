@@ -1,0 +1,390 @@
+# tix spec diff: a ticket's spec change per repo, repo and vault locations
+env GIT_AUTHOR_NAME=x GIT_AUTHOR_EMAIL=x@example.com GIT_COMMITTER_NAME=x GIT_COMMITTER_EMAIL=x@example.com
+env V=home/Documents/Obsidian/a
+env W=home/Projects/work-a/MAN-1
+env W2=home/Projects/work-a/MAN-2
+mkdir $V/.obsidian $V/tickets/manual/MAN-1 $W $V/projects/github-acme-ledger/specs/posting $V/projects/github-acme-plain
+cp man-1.md $V/tickets/manual/MAN-1/MAN-1.md
+cp ledger.md $V/projects/github-acme-ledger/github-acme-ledger.md
+cp posting.md $V/projects/github-acme-ledger/specs/posting/spec.md
+cp plain.md $V/projects/github-acme-plain/github-acme-plain.md
+expand ws.json
+cp ws.json $W/workspace.json
+
+# billing: specs in the repo; base has them, the ticket branch has not changed them yet
+exec git init -q -b main $W/billing
+mkdir $W/billing/specs/orders
+cp orders-base.md $W/billing/specs/orders/spec.md
+exec git -C $W/billing add -A
+exec git -C $W/billing commit -q -m base
+exec git -C $W/billing checkout -q -b feature/MAN-1
+exec git init -q -b main $W/plain
+exec tix spec diff MAN-1
+stdout 'github-acme-billing \(repo specs\): no spec change'
+stdout 'github-acme-ledger \(vault specs\): no spec change'
+stdout 'github-acme-plain: no specs'
+
+# a committed change and an uncommitted new capability
+cp orders-new.md $W/billing/specs/orders/spec.md
+exec git -C $W/billing commit -q -am change
+mkdir $W/billing/specs/refunds
+cp refunds.md $W/billing/specs/refunds/spec.md
+exec tix spec diff MAN-1
+stdout 'github-acme-billing \(repo specs\)'
+stdout '2 added, 1 changed, 1 removed, 1 status'
+stdout '^  added REQ-ORD-4 · Refund \(orders, proposed\)$'
+stdout '^  changed REQ-ORD-2 · Cancel \(orders\)$'
+stdout '^  removed REQ-ORD-3 · Archive \(orders\)$'
+stdout '^  status REQ-ORD-1 · Create \(orders, proposed -> implemented\)$'
+stdout '^  added REQ-REF-1 · Refund \(refunds, proposed\)$'
+stdout '^--- a/orders/spec.md$'
+stdout '^\+status: implemented$'
+stdout '^--- a/refunds/spec.md$'
+stdout 'github-acme-ledger \(vault specs\): no spec change'
+
+# the vault copy: the ticket's version of one capability against projects/
+exec tix spec start MAN-1 github-acme-ledger posting
+cp posting-new.md $V/tickets/manual/MAN-1/specs/github-acme-ledger/posting/spec.md
+exec tix spec diff MAN-1
+stdout 'github-acme-ledger \(vault specs\)'
+stdout '^  added REQ-LED-2 · Reverse \(posting, proposed\)$'
+stdout '^  changed interfaces \(posting\)$'
+stdout '^--- a/posting/spec.md$'
+! stdout 'no spec change.*ledger'
+
+# --stat: counts and files, no raw diff
+exec tix spec diff --stat MAN-1
+stdout '^  orders/spec.md \| \+\d+ -\d+$'
+stdout '^  posting/spec.md \| \+\d+ -\d+$'
+! stdout '^---'
+! stdout '^@@'
+
+# read-only: the vault's spec is as it was
+exec tix spec diff MAN-1
+cmp $V/projects/github-acme-ledger/specs/posting/spec.md posting.md
+
+# promotion: tix spec promote checks against the start's snapshot, moves the copy in and writes the version
+exec tix spec promote MAN-1
+stdout '^github-acme-ledger: promoted 1 files \(posting\); version projects/github-acme-ledger/spec-versions/github-acme-ledger-spec-MAN-1.md$'
+! stdout 'billing'
+cmp $V/tickets/manual/MAN-1/specs-base/github-acme-ledger/posting/spec.md posting.md
+cmp $V/tickets/manual/MAN-1/specs-after/github-acme-ledger/posting/spec.md posting-new.md
+cmp $V/projects/github-acme-ledger/specs/posting/spec.md posting-new.md
+! exists $V/tickets/manual/MAN-1/specs/github-acme-ledger/posting/spec.md
+exec tix spec diff MAN-1
+stdout 'github-acme-ledger \(vault specs\)'
+stdout '^  added REQ-LED-2 · Reverse \(posting, proposed\)$'
+stdout '^  changed interfaces \(posting\)$'
+! stdout 'no spec change.*ledger'
+# a repeat run promotes nothing and gives the same change
+exec tix spec promote MAN-1
+stdout 'github-acme-ledger: nothing to promote'
+cmp $V/tickets/manual/MAN-1/specs-base/github-acme-ledger/posting/spec.md posting.md
+exec tix spec diff MAN-1
+stdout '^  added REQ-LED-2 · Reverse \(posting, proposed\)$'
+! exec tix spec promote MAN-99
+stderr 'no workspace for MAN-99'
+
+# another ticket promotes a new capability and changes posting on top: neither
+# shows up in this ticket's change
+mkdir $V/tickets/manual/MAN-2 $W2
+cp man-1.md $V/tickets/manual/MAN-2/MAN-2.md
+exec tix spec start MAN-2 github-acme-ledger posting
+mkdir $V/tickets/manual/MAN-2/specs/github-acme-ledger/journal
+cp journal.md $V/tickets/manual/MAN-2/specs/github-acme-ledger/journal/spec.md
+cp posting-other.md $V/tickets/manual/MAN-2/specs/github-acme-ledger/posting/spec.md
+expand ws2.json
+cp ws2.json $W2/workspace.json
+exec tix spec promote MAN-2
+stdout '^github-acme-ledger: promoted 2 files \(journal, posting\); version projects/github-acme-ledger/spec-versions/github-acme-ledger-spec-MAN-2.md$'
+exec tix spec diff MAN-1
+stdout '^  added REQ-LED-2 · Reverse \(posting, proposed\)$'
+! stdout 'REQ-JRN-1'
+! stdout 'REQ-LED-3'
+exec tix spec diff MAN-2
+stdout '^  added REQ-JRN-1 · Record \(journal, proposed\)$'
+stdout '^  added REQ-LED-3 · Void \(posting, proposed\)$'
+! stdout 'REQ-LED-2'
+
+# a ticket promoted before snapshots had an after side (base only): the old rule,
+# projects/ with the copy laid on
+rm $V/tickets/manual/MAN-1/specs-after
+exec tix spec diff MAN-1
+stdout '^  added REQ-JRN-1 · Record \(journal, proposed\)$'
+stdout '^  added REQ-LED-2 · Reverse \(posting, proposed\)$'
+
+# a base that only exists on origin (no local branch of that name)
+exec git init -q -b main $W/remote
+mkdir $W/remote/specs/orders
+cp orders-base.md $W/remote/specs/orders/spec.md
+exec git -C $W/remote add -A
+exec git -C $W/remote commit -q -m base
+exec git -C $W/remote update-ref refs/remotes/origin/release HEAD
+exec git -C $W/remote checkout -q -b feature/MAN-1
+cp orders-new.md $W/remote/specs/orders/spec.md
+exec git -C $W/remote commit -q -am change
+exec tix spec diff MAN-1
+stdout 'github-acme-remote \(repo specs\)'
+stdout '1 added, 1 changed, 1 removed, 1 status'
+! stdout 'added REQ-ORD-1'
+
+# a base that resolves nowhere is an error, not an empty tree
+exec git init -q -b main $W/gone
+mkdir $W/gone/specs/orders
+cp orders-base.md $W/gone/specs/orders/spec.md
+exec git -C $W/gone add -A
+exec git -C $W/gone commit -q -m base
+! exec tix spec diff MAN-1 --stat
+stderr 'github-acme-gone.*base "nope" does not resolve'
+
+# errors
+! exec tix spec diff MAN-99
+stderr 'no workspace for MAN-99'
+! exec tix spec diff
+stderr 'accepts 1 arg'
+
+-- man-1.md --
+---
+title: T
+type: ticket
+tags: [ticket]
+---
+# T
+-- ledger.md --
+---
+title: github-acme-ledger
+type: project
+repo: github/acme/ledger
+specs: vault
+tags: [project]
+---
+# github-acme-ledger
+-- plain.md --
+---
+title: github-acme-plain
+type: project
+repo: github/acme/plain
+tags: [project]
+---
+# github-acme-plain
+-- ws.json --
+{"id": "MAN-1", "vault": "$WORK/home/Documents/Obsidian/a", "repos": [
+  {"provider": "github", "owner": "acme", "repo": "billing", "slug": "github-acme-billing", "path": "$WORK/home/Projects/work-a/MAN-1/billing", "base": "main", "branch": "feature/MAN-1", "mode": "worktree", "targetVersion": null},
+  {"provider": "github", "owner": "acme", "repo": "ledger", "slug": "github-acme-ledger", "path": "$WORK/home/Projects/work-a/MAN-1/ledger", "base": "main", "branch": "feature/MAN-1", "mode": "worktree", "targetVersion": null},
+  {"provider": "github", "owner": "acme", "repo": "plain", "slug": "github-acme-plain", "path": "$WORK/home/Projects/work-a/MAN-1/plain", "base": "main", "branch": "feature/MAN-1", "mode": "worktree", "targetVersion": null},
+  {"provider": "github", "owner": "acme", "repo": "remote", "slug": "github-acme-remote", "path": "$WORK/home/Projects/work-a/MAN-1/remote", "base": "release", "branch": "feature/MAN-1", "mode": "worktree", "targetVersion": null},
+  {"provider": "github", "owner": "acme", "repo": "gone", "slug": "github-acme-gone", "path": "$WORK/home/Projects/work-a/MAN-1/gone", "base": "nope", "branch": "feature/MAN-1", "mode": "worktree", "targetVersion": null}
+]}
+-- ws2.json --
+{"id": "MAN-2", "vault": "$WORK/home/Documents/Obsidian/a", "repos": [
+  {"provider": "github", "owner": "acme", "repo": "ledger", "slug": "github-acme-ledger", "path": "$WORK/home/Projects/work-a/MAN-2/ledger", "base": "main", "branch": "feature/MAN-2", "mode": "worktree", "targetVersion": null}
+]}
+-- journal.md --
+---
+capability: journal
+prefix: JRN
+---
+# Journal
+
+## Purpose
+Journal.
+
+## Requirements
+
+### REQ-JRN-1 · Record
+status: proposed
+The system SHALL record a journal line.
+
+#### Scenario: record
+- WHEN an entry is posted
+- THEN a line is recorded
+-- posting-other.md --
+---
+capability: posting
+prefix: LED
+---
+# Posting
+
+## Purpose
+Posting.
+
+## Requirements
+
+### REQ-LED-1 · Post
+status: proposed
+The system SHALL post an entry.
+
+#### Scenario: post
+- WHEN an order arrives
+- THEN an entry is posted
+
+### REQ-LED-2 · Reverse
+status: proposed
+The system SHALL reverse an entry.
+
+#### Scenario: reverse
+- WHEN a refund arrives
+- THEN the entry is reversed
+
+### REQ-LED-3 · Void
+status: proposed
+The system SHALL void an entry.
+
+#### Scenario: void
+- WHEN an entry is wrong
+- THEN it is voided
+
+## Interfaces
+
+### Provides
+| Interface | Kind | Where | With |
+|---|---|---|---|
+| POST /reverse | http | api | github-acme-billing |
+-- orders-base.md --
+---
+capability: orders
+prefix: ORD
+---
+# Orders
+
+## Purpose
+Orders.
+
+## Requirements
+
+### REQ-ORD-1 · Create
+status: proposed
+The system SHALL create an order.
+
+#### Scenario: create
+- WHEN a user orders
+- THEN an order exists
+
+### REQ-ORD-2 · Cancel
+status: proposed
+The system SHALL cancel an order.
+
+#### Scenario: cancel
+- WHEN a user cancels
+- THEN the order is cancelled
+
+### REQ-ORD-3 · Archive
+status: proposed
+The system SHALL archive an order.
+
+#### Scenario: archive
+- WHEN a month passes
+- THEN it is archived
+-- orders-new.md --
+---
+capability: orders
+prefix: ORD
+---
+# Orders
+
+## Purpose
+Orders.
+
+## Requirements
+
+### REQ-ORD-1 · Create
+status: implemented
+The system SHALL create an order.
+
+#### Scenario: create
+- WHEN a user orders
+- THEN an order exists
+
+### REQ-ORD-2 · Cancel
+status: proposed
+The system SHALL cancel an order within a day.
+
+#### Scenario: cancel
+- WHEN a user cancels
+- THEN the order is cancelled
+
+### REQ-ORD-4 · Refund
+status: proposed
+The system SHALL refund a cancelled order.
+
+#### Scenario: refund
+- WHEN an order is cancelled
+- THEN the buyer is refunded
+-- refunds.md --
+---
+capability: refunds
+prefix: REF
+---
+# Refunds
+
+## Purpose
+Refunds.
+
+## Requirements
+
+### REQ-REF-1 · Refund
+status: proposed
+The system SHALL refund.
+
+#### Scenario: refund
+- WHEN asked
+- THEN refunded
+-- posting.md --
+---
+capability: posting
+prefix: LED
+---
+# Posting
+
+## Purpose
+Posting.
+
+## Requirements
+
+### REQ-LED-1 · Post
+status: proposed
+The system SHALL post an entry.
+
+#### Scenario: post
+- WHEN an order arrives
+- THEN an entry is posted
+
+## Interfaces
+
+### Provides
+| Interface | Kind | Where | With |
+|---|---|---|---|
+-- posting-new.md --
+---
+capability: posting
+prefix: LED
+---
+# Posting
+
+## Purpose
+Posting.
+
+## Requirements
+
+### REQ-LED-1 · Post
+status: proposed
+The system SHALL post an entry.
+
+#### Scenario: post
+- WHEN an order arrives
+- THEN an entry is posted
+
+### REQ-LED-2 · Reverse
+status: proposed
+The system SHALL reverse an entry.
+
+#### Scenario: reverse
+- WHEN a refund arrives
+- THEN the entry is reversed
+
+## Interfaces
+
+### Provides
+| Interface | Kind | Where | With |
+|---|---|---|---|
+| POST /reverse | http | api | github-acme-billing |

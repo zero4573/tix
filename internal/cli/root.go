@@ -38,7 +38,7 @@ vault (tix vault default; else the only vault).`,
 		wsCmd(),
 		cleanCmd(),
 		specCmd(),
-
+		teachCmd(),
 		claudeCmd(),
 		layoutCmd(),
 		hookCmd(),

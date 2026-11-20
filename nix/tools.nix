@@ -39,7 +39,7 @@ let
 
   defaultsEnv = { TIX_PLUGIN = plugin; } // env;
 
-  tools = with pkgs; [ git coreutils fzf bash gitleaks gosec govulncheck syft ] ++ lib.optional isLinux pkgs.libnotify;
+  tools = with pkgs; [ git coreutils fzf bash gitleaks gosec govulncheck syft diffnav ] ++ lib.optional isLinux pkgs.libnotify;
 
   tix = pkgs.runCommand "tix"
     {

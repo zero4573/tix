@@ -95,6 +95,17 @@ stdout '^=== github-acme-billing \(feature/fix-the-thing vs main\) ===$'
 stdout 'change.txt \| 1 \+'
 stdout '^--- untracked files:$'
 stdout '^untracked.txt$'
+exec tix ws diff MAN-1
+stdout '^\+\+\+ b/change.txt$'
+stdout '^untracked.txt$'
+env TIX_DIFF_VIEWER=diffnav
+! exec tix ws diff MAN-1
+stderr 'diff viewer diffnav needs a terminal; use --viewer git'
+exec tix ws diff MAN-1 --viewer git
+stdout '^\+\+\+ b/change.txt$'
+env TIX_DIFF_VIEWER=
+! exec tix ws diff MAN-1 --viewer nope
+stderr 'unknown diff viewer "nope" \(one of diffnav, git\)'
 
 # never a second copy of the repo: a main clone whose .git isn't writable is refused
 env TIX_WS_SHARED_CLONE=1

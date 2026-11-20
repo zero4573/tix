@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zero4573/tix/internal/config"
+	"github.com/zero4573/tix/internal/diffview"
 	"github.com/zero4573/tix/internal/followup"
 	"github.com/zero4573/tix/internal/fsx"
 	"github.com/zero4573/tix/internal/gitx"
@@ -495,11 +497,17 @@ func wsLsCmd() *cobra.Command {
 
 func wsDiffCmd() *cobra.Command {
 	var stat bool
+	var viewer string
 	cmd := &cobra.Command{
-		Use:   "diff <ID> [--stat]",
+		Use:   "diff <ID> [--stat] [--viewer <name>]",
 		Short: "Everything changed on a ticket's branches since they left their base",
 		Long: `Everything changed on the ticket's branches since they left their base,
-committed or not, plus untracked files, per repo.`,
+committed or not, plus untracked files, per repo.
+
+In a terminal it opens diffnav (a file tree over delta) on all the ticket's
+repos at once, each repo a folder; untracked files show as new. Piped, with
+--stat, or without diffnav on PATH it prints git's diff per repo, untracked
+files by name. --viewer, else ` + diffview.EnvVar + `, picks one: ` + strings.Join(diffview.Names(), ", ") + `.`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeWorkspaceID,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -511,31 +519,26 @@ committed or not, plus untracked files, per repo.`,
 			if err := requireKey("diff", key); err != nil {
 				return err
 			}
-			for _, r := range wsRepos(ctx, key) {
-				fmt.Printf("=== %s (%s vs %s) ===\n", r.Slug, r.Branch, r.Base)
-				if _, err := os.Stat(filepath.Join(r.Path, ".git")); err != nil {
-					fmt.Printf("(worktree missing: %s)\n", r.Path)
-					continue
-				}
-				mb, err := gitx.Out(r.Path, "merge-base", gitx.BaseRef(r.Path, r.Base), "HEAD")
-				if err != nil || mb == "" {
-					mb = "HEAD"
-				}
-				diff := []string{"--no-pager", "diff"}
-				if stat {
-					diff = append(diff, "--stat")
-				}
-				_ = gitx.Run(r.Path, append(diff, mb)...)
-				if untracked, _ := gitx.Out(r.Path, "ls-files", "--others", "--exclude-standard"); untracked != "" {
-					fmt.Println("--- untracked files:")
-					fmt.Println(untracked)
-				}
-				fmt.Println()
+			v, err := diffview.Pick(diffview.Choice{Flag: viewer, Env: os.Getenv(diffview.EnvVar), Stat: stat,
+				Terminal: isTerminal(), LookPath: exec.LookPath})
+			if err != nil {
+				return fmt.Errorf("diff: %w", err)
 			}
-			return nil
+			var repos []diffview.Repo
+			for _, r := range wsRepos(ctx, key) {
+				dr := diffview.Repo{Name: r.Slug, Branch: r.Branch, Base: r.Base, Dir: r.Path, MergeBase: "HEAD"}
+				if !dr.Missing() {
+					if mb, err := gitx.Out(r.Path, "merge-base", gitx.BaseRef(r.Path, r.Base), "HEAD"); err == nil && mb != "" {
+						dr.MergeBase = mb
+					}
+				}
+				repos = append(repos, dr)
+			}
+			return v.Show(repos, diffview.Options{Stat: stat, Stdout: os.Stdout, Stderr: os.Stderr})
 		},
 	}
 	cmd.Flags().BoolVar(&stat, "stat", false, "only a diffstat")
+	cmd.Flags().StringVar(&viewer, "viewer", "", "diff viewer: "+strings.Join(diffview.Names(), ", "))
 	return cmd
 }
 

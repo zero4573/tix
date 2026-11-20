@@ -44,6 +44,9 @@ vault (tix vault default; else the only vault).`,
 		hookCmd(),
 		dirCmd(),
 		ticketCmd(),
+
+		citeCmd(),
+		doctorCmd(),
 	)
 	return root
 }

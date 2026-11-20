@@ -1,0 +1,50 @@
+# tix doctor collect: ticket sessions condensed for /tix:doctor, scored tickets left out
+env V=home/Documents/Obsidian/a
+env CLAUDE_CONFIG_DIR=$WORK/cfg
+mkdir $V/.obsidian $V/tickets/manual/MAN-1 $V/tix-improvements
+cp man-1.md $V/tickets/manual/MAN-1/MAN-1.md
+cp board.md $V/tickets/manual/MAN-1/board.md
+cp doctor.md $V/tix-improvements/2026-11-01-0900-doctor.md
+exec sh -c 'for id in MAN-1 MAN-2; do ws="$1/home/Projects/work-a/$id"; d=$(printf %s "$ws" | sed "s/[^A-Za-z0-9]/-/g"); mkdir -p "cfg/projects/$d"; sed "s|WS|$ws|" session.jsonl > "cfg/projects/$d/s-$id.jsonl"; done' sh $WORK
+
+exec tix doctor collect --out $WORK/out
+stdout '^scored\tMAN-2\t2026-11-01-0900-doctor.md$'
+stdout '^out\t.*/out$'
+stdout '^ticket\tMAN-1\t1\t1\t1\t.*/out/MAN-1/index.md$'
+! stdout 'ticket\tMAN-2'
+grep 'board.md$' out/MAN-1/index.md
+grep '^\| transcripts/001-main-s1.md \| main \| claude-opus-5-5 \|' out/MAN-1/index.md
+grep '^USER: fix the retry$' out/MAN-1/transcripts/001-main-s1.md
+grep '^ERROR: boom$' out/MAN-1/transcripts/001-main-s1.md
+
+exec tix doctor collect --out $WORK/out2 --all --max 1
+stdout '^ticket\t'
+! stdout 'scored'
+
+exec tix doctor collect --out $WORK/out3 MAN-2 MAN-9
+stdout '^none\tMAN-9$'
+stdout '^ticket\tMAN-2\t'
+
+env CLAUDE_CONFIG_DIR=$WORK/empty
+! exec tix doctor collect
+! stdout 'ticket'
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+source: manual
+---
+-- board.md --
+---
+autopilot: stack
+---
+-- doctor.md --
+---
+type: tix-improvements
+tickets: [MAN-2]
+---
+-- session.jsonl --
+{"type":"user","cwd":"WS","sessionId":"s1","timestamp":"2026-11-10T10:00:00Z","origin":{"kind":"human"},"message":{"role":"user","content":"fix the retry"}}
+{"type":"assistant","cwd":"WS","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"user","cwd":"WS","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"boom"}]}}

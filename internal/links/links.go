@@ -1,0 +1,555 @@
+package links
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/zero4573/tix/internal/fsx"
+)
+
+var (
+	linkRe  = regexp.MustCompile(`(!?)\[\[([^\[\]|#^]*)([#^][^\[\]|]*)?(\|[^\[\]]*)?\]\]`)
+	fenceRe = regexp.MustCompile("^\\s*(`{3,}|~{3,})(.*)$")
+)
+
+func Files(vault string) []string {
+	var out []string
+	_ = filepath.WalkDir(vault, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if p != vault && strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type().IsRegular() {
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+type Index struct {
+	vault  string
+	byName map[string][]string
+	rels   [][2]string
+}
+
+func keys(p string) []string {
+	name := strings.ToLower(filepath.Base(p))
+	k := []string{name}
+	if strings.HasSuffix(name, ".md") {
+		k = append(k, strings.TrimSuffix(name, ".md"))
+	}
+	return k
+}
+
+func NewIndex(vault string) *Index {
+	ix := &Index{vault: vault, byName: map[string][]string{}}
+	for _, p := range Files(vault) {
+		rel, _ := filepath.Rel(vault, p)
+		for _, k := range keys(p) {
+			ix.byName[k] = append(ix.byName[k], p)
+		}
+		ix.rels = append(ix.rels, [2]string{strings.ToLower(filepath.ToSlash(rel)), p})
+	}
+	return ix
+}
+
+func (ix *Index) Resolve(target string) []string {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return nil
+	}
+	if !strings.Contains(t, "/") {
+		return ix.byName[t]
+	}
+	t = strings.TrimLeft(t, "/")
+	var out []string
+	for _, r := range ix.rels {
+		for _, c := range []string{t, t + ".md"} {
+			if r[0] == c || strings.HasSuffix(r[0], "/"+c) {
+				out = append(out, r[1])
+				break
+			}
+		}
+	}
+	return out
+}
+
+func lines(text string) []string {
+	var out []string
+	for text != "" {
+		i := strings.IndexByte(text, '\n')
+		if i < 0 {
+			out = append(out, text)
+			break
+		}
+		out = append(out, text[:i+1])
+		text = text[i+1:]
+	}
+	return out
+}
+
+type Place struct {
+	File        string
+	Line        int
+	Frontmatter bool
+	Field       string
+	SourceBlock bool
+}
+
+const (
+	sourceStart = "<!-- source:start -->"
+	sourceEnd   = "<!-- source:end -->"
+)
+
+var fieldRe = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_-]*):`)
+
+func eachLine(file, text string, fn func(l string, code bool, p Place)) {
+	front, source := false, false
+	fence := ""
+	field := ""
+	for i, l := range lines(text) {
+		bare := strings.TrimRight(l, "\r\n")
+		p := Place{File: file, Line: i + 1}
+		switch {
+		case i == 0 && strings.TrimPrefix(bare, "\ufeff") == "---":
+			front = true
+			p.Frontmatter = true
+		case front && bare == "---":
+			front = false
+			p.Frontmatter = true
+		case front:
+			if m := fieldRe.FindStringSubmatch(bare); m != nil {
+				field = m[1]
+			}
+			p.Frontmatter, p.Field = true, field
+		case fence != "":
+			if m := fenceRe.FindStringSubmatch(bare); m != nil && m[1][0] == fence[0] && len(m[1]) >= len(fence) && strings.TrimSpace(m[2]) == "" {
+				fence = ""
+			}
+			fn(l, true, p)
+			continue
+		case opens(bare) != "":
+			fence = opens(bare)
+			fn(l, true, p)
+			continue
+		default:
+			switch strings.TrimSpace(bare) {
+			case sourceStart:
+				source = true
+			case sourceEnd:
+				source = false
+			}
+			p.SourceBlock = source
+		}
+		fn(l, false, p)
+	}
+}
+
+func opens(l string) string {
+	m := fenceRe.FindStringSubmatch(l)
+	if m == nil || m[1][0] == '`' && strings.Contains(m[2], "`") {
+		return ""
+	}
+	return m[1]
+}
+
+func codeSpans(l string) [][2]int {
+	var out [][2]int
+	run := func(i int) int {
+		j := i
+		for j < len(l) && l[j] == '`' {
+			j++
+		}
+		return j - i
+	}
+	for i := 0; i < len(l); {
+		if l[i] != '`' {
+			i++
+			continue
+		}
+		n := run(i)
+		end := -1
+		for j := i + n; j < len(l); {
+			if l[j] != '`' {
+				j++
+				continue
+			}
+			m := run(j)
+			if m == n {
+				end = j + m
+				break
+			}
+			j += m
+		}
+		if end < 0 {
+			i += n
+			continue
+		}
+		out = append(out, [2]int{i, end})
+		i = end
+	}
+	return out
+}
+
+type link struct {
+	Place
+	parts []string
+}
+
+func target(m []string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m[2]), `\`))
+}
+
+func linksIn(file, text string) []link {
+	var out []link
+	eachLine(file, text, func(l string, code bool, p Place) {
+		if code {
+			return
+		}
+		l = strings.TrimRight(l, "\r\n")
+		scrubbed := []byte(l)
+		for _, loc := range codeSpans(l) {
+			for i := loc[0]; i < loc[1]; i++ {
+				scrubbed[i] = ' '
+			}
+		}
+		for _, m := range linkRe.FindAllStringSubmatch(string(scrubbed), -1) {
+			out = append(out, link{p, m})
+		}
+	})
+	return out
+}
+
+type at struct {
+	Place
+	line       string
+	start, end int
+}
+
+func rewriteLinks(file, text string, repl func(m []string, a at) string) string {
+	var b strings.Builder
+	eachLine(file, text, func(l string, code bool, p Place) {
+		if code {
+			b.WriteString(l)
+			return
+		}
+		bare := strings.TrimRight(l, "\r\n")
+		sub := func(from, to int) {
+			seg, prev := l[from:to], 0
+			for _, loc := range linkRe.FindAllStringSubmatchIndex(seg, -1) {
+				m := make([]string, len(loc)/2)
+				for i := range m {
+					if loc[2*i] >= 0 {
+						m[i] = seg[loc[2*i]:loc[2*i+1]]
+					}
+				}
+				b.WriteString(seg[prev:loc[0]])
+				b.WriteString(repl(m, at{p, bare, from + loc[0], from + loc[1]}))
+				prev = loc[1]
+			}
+			b.WriteString(seg[prev:])
+		}
+		last := 0
+		for _, loc := range codeSpans(l) {
+			sub(last, loc[0])
+			b.WriteString(l[loc[0]:loc[1]])
+			last = loc[1]
+		}
+		sub(last, len(l))
+	})
+	return b.String()
+}
+
+func replaceOutsideCode(text string, repl func(m []string) string) string {
+	return rewriteLinks("", text, func(m []string, _ at) string { return repl(m) })
+}
+
+func notes(vault string) []string {
+	var out []string
+	for _, p := range Files(vault) {
+		rel, _ := filepath.Rel(vault, p)
+		if strings.HasSuffix(p, ".md") && strings.Split(filepath.ToSlash(rel), "/")[0] != "templates" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+type Problem struct {
+	Place
+	Target  string
+	Found   []string
+	Missing bool
+}
+
+func Problems(vault string, files []string) []Problem {
+	ix := NewIndex(vault)
+	if len(files) == 0 {
+		files = notes(vault)
+	}
+	var out []Problem
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			out = append(out, Problem{Place: Place{File: f}, Missing: true})
+			continue
+		}
+		for _, l := range linksIn(f, string(data)) {
+			t := target(l.parts)
+			if t == "" {
+				continue
+			}
+			if found := ix.Resolve(t); len(found) != 1 {
+				out = append(out, Problem{Place: l.Place, Target: t, Found: found})
+			}
+		}
+	}
+	return out
+}
+
+type CheckOpts struct {
+	Exempt     func(p Place, target string) bool
+	ExemptNote string
+}
+
+func Check(vault string, files []string, w io.Writer) int {
+	return CheckWith(vault, files, w, CheckOpts{})
+}
+
+func CheckWith(vault string, files []string, w io.Writer, o CheckOpts) int {
+	if len(files) == 0 {
+		files = notes(vault)
+	}
+	problems, exempt := 0, 0
+	for _, p := range Problems(vault, files) {
+		rel := p.File
+		if r, err := filepath.Rel(vault, p.File); err == nil && !strings.HasPrefix(r, "..") {
+			rel = r
+		}
+		switch {
+		case p.Missing:
+			fmt.Fprintf(w, "%s: file not found\n", p.File)
+		case len(p.Found) == 0 && o.Exempt != nil && o.Exempt(p.Place, p.Target):
+			exempt++
+			continue
+		case len(p.Found) == 0:
+			fmt.Fprintf(w, "%s:%d: unresolved link [[%s]]\n", rel, p.Line, p.Target)
+		default:
+			var where []string
+			for _, f := range p.Found {
+				r, _ := filepath.Rel(vault, f)
+				where = append(where, r)
+			}
+			fmt.Fprintf(w, "%s:%d: ambiguous link [[%s]] -> %s\n", rel, p.Line, p.Target, strings.Join(where, ", "))
+		}
+		problems++
+	}
+	if exempt > 0 && o.ExemptNote != "" {
+		fmt.Fprintf(w, o.ExemptNote+"\n", exempt)
+	}
+	if problems == 0 {
+		fmt.Fprintf(w, "tix vault links: %d file(s) checked, all links resolve\n", len(files))
+	}
+	return problems
+}
+
+func resolvePath(p string) string {
+	p, _ = filepath.Abs(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return p
+}
+
+func inside(p, dir string) bool { return fsx.Within(p, dir) }
+
+type Moved struct{ From, To string }
+
+type MoveResult struct {
+	Moves     []Moved
+	Rewritten int
+	Changed   []string
+}
+
+func sortedKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func Move(vault, src, dst string) (res MoveResult, err error) {
+	vault = resolvePath(vault)
+	if !filepath.IsAbs(src) {
+		src = filepath.Join(vault, src)
+	}
+	if !filepath.IsAbs(dst) {
+		dst = filepath.Join(vault, dst)
+	}
+	src = resolvePath(src)
+	if st, err := os.Stat(src); err != nil || !st.Mode().IsRegular() {
+		return MoveResult{}, fmt.Errorf("no such file: %s", src)
+	}
+	if st, err := os.Stat(dst); err == nil && st.IsDir() {
+		dst = filepath.Join(dst, filepath.Base(src))
+	}
+	dst = resolvePath(dst)
+	if !inside(src, vault) || !inside(dst, vault) {
+		return MoveResult{}, errors.New("source and destination must both be inside the vault")
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		r, _ := filepath.Rel(vault, dst)
+		return MoveResult{}, fmt.Errorf("destination exists: %s", r)
+	}
+	ix := NewIndex(vault)
+	clash := map[string]bool{}
+	for _, k := range keys(dst) {
+		for _, p := range ix.byName[k] {
+			if resolvePath(p) != src {
+				r, _ := filepath.Rel(vault, p)
+				clash[r] = true
+			}
+		}
+	}
+	if len(clash) > 0 {
+		var where []string
+		for r := range clash {
+			where = append(where, r)
+		}
+		sort.Strings(where)
+		return MoveResult{}, fmt.Errorf("name '%s' is already used by %s; links to it would become ambiguous", filepath.Base(dst), strings.Join(where, ", "))
+	}
+
+	oldRel, _ := filepath.Rel(vault, src)
+	newRel, _ := filepath.Rel(vault, dst)
+	oldRel, newRel = filepath.ToSlash(oldRel), filepath.ToSlash(newRel)
+	forms := pathForms(oldRel)
+	newTarget := linkPath(newRel)
+	bareOld, bareNew := map[string]bool{}, ""
+	if !strings.EqualFold(filepath.Base(src), filepath.Base(dst)) {
+		unique := true
+		for _, k := range keys(src) {
+			for _, p := range ix.byName[k] {
+				unique = unique && resolvePath(p) == src
+			}
+		}
+		if unique {
+			for _, k := range keys(src) {
+				bareOld[k] = true
+			}
+			bareNew = path.Base(newTarget)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return MoveResult{}, err
+	}
+	if err := moveFile(src, dst); err != nil {
+		return MoveResult{}, err
+	}
+
+	res = MoveResult{Moves: []Moved{{oldRel, newRel}}}
+	changed := map[string]bool{}
+	defer func() { res.Changed = sortedKeys(changed) }()
+	for _, f := range Files(vault) {
+		if !strings.HasSuffix(f, ".md") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		out := replaceOutsideCode(text, func(m []string) string {
+			t := strings.ToLower(strings.TrimLeft(strings.TrimSpace(m[2]), "/"))
+			if !strings.Contains(t, "/") {
+				if bareOld[t] {
+					res.Rewritten++
+					return m[1] + "[[" + bareNew + m[3] + m[4] + "]]"
+				}
+			} else if namesPath(t, forms) {
+				res.Rewritten++
+				return m[1] + "[[" + newTarget + m[3] + m[4] + "]]"
+			}
+			return m[0]
+		})
+		if out != text {
+			if err := writeNote(f, []byte(out)); err != nil {
+				return res, err
+			}
+			rf, _ := filepath.Rel(vault, f)
+			changed[filepath.ToSlash(rf)] = true
+		}
+	}
+	return res, nil
+}
+
+func pathForms(rel string) []string {
+	forms := []string{strings.ToLower(rel)}
+	if strings.HasSuffix(rel, ".md") {
+		forms = append(forms, strings.ToLower(strings.TrimSuffix(rel, ".md")))
+	}
+	return forms
+}
+
+func namesPath(t string, forms []string) bool {
+	for _, form := range forms {
+		if form == t || strings.HasSuffix(form, "/"+t) {
+			return true
+		}
+	}
+	return false
+}
+
+func linkPath(rel string) string { return strings.TrimSuffix(rel, ".md") }
+
+var moveFile = osMoveFile
+
+func osMoveFile(src, dst string) error {
+	if os.Rename(src, dst) == nil {
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, st.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+var writeNote = fsx.WriteNote
+
+func WrapWriteNoteForTest(wrap func(next func(f string, data []byte) error) func(f string, data []byte) error) (restore func()) {
+	old := writeNote
+	writeNote = wrap(old)
+	return func() { writeNote = old }
+}

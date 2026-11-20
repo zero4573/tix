@@ -43,6 +43,10 @@ func With(path string, fn func() error) error {
 		return err
 	}
 	defer f.Close()
+	return WithFile(f, fn)
+}
+
+func WithFile(f *os.File, fn func() error) error {
 	if err := lockFile(f); err != nil {
 		return err
 	}

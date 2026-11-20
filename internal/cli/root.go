@@ -50,6 +50,7 @@ vault (tix vault default; else the only vault).`,
 		doctorCmd(),
 		reviewCmd(),
 		mainCmd(),
+		cveCmd(),
 	)
 	return root
 }

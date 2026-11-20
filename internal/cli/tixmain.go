@@ -58,7 +58,11 @@ since each pass is a turn herdr notifies you of: a ticket session of main's
 exited, finished a turn while checking or shipping, or sat idle 30 minutes
 while working; a ticket note's status changed; a watched pull request
 changed (state, comments or commits, CI, merge checks; read every 10
-minutes); an hourly tix sync brought new tickets. Its subcommands are how
+minutes); an hourly tix sync brought new tickets; its security sweep found
+something main acts on. The service runs that sweep itself (tix cve update,
+on the host) whenever the last one recorded in the vault's
+security/.state.json is 6 hours old, so a restart of main doesn't sweep
+again, and retries a failed one after 30 minutes. Its subcommands are how
 the session calls it:
 
   tix main list                       ticket sessions: ID, agent, state, pane, ticket status, main|user
@@ -217,7 +221,7 @@ func mainClaudeMD(ctx vault.Context) string {
 func mainServeCmd() *cobra.Command {
 	var sock, herdr, tix, pane, wake, mainFile string
 	var max int
-	var tick, idle, prPoll, syncEach time.Duration
+	var tick, idle, prPoll, syncEach, sweepEach time.Duration
 	cmd := &cobra.Command{
 		Use:    "serve --socket <path> --herdr <bin> --tix <bin>",
 		Short:  "The main session's host service (started by tix main)",
@@ -242,7 +246,7 @@ func mainServeCmd() *cobra.Command {
 			_ = os.Chmod(sock, 0o600)
 			if pane != "" && wake != "" {
 				w := &conductor.Waker{S: srv, Pane: pane, Command: wake, MainFile: mainFile, Debounce: time.Minute,
-					IdleAfter: idle, PRPoll: prPoll, SyncEach: syncEach, Tick: tick}
+					IdleAfter: idle, PRPoll: prPoll, SyncEach: syncEach, SweepEach: sweepEach, Tick: tick}
 				go w.Run(context.Background(), 20*time.Second)
 			}
 			parent := os.Getppid()
@@ -268,6 +272,7 @@ func mainServeCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&idle, "idle-after", 30*time.Minute, "wake main when a working ticket's session sits idle this long")
 	cmd.Flags().DurationVar(&prPoll, "pr-poll", 10*time.Minute, "how often the watched pull requests are read")
 	cmd.Flags().DurationVar(&syncEach, "sync-each", time.Hour, "how often tix sync runs (main is woken only for new tickets)")
+	cmd.Flags().DurationVar(&sweepEach, "cve-sweep-each", 6*time.Hour, "how old the last security sweep may get before the service runs tix cve update (0: never)")
 	cmd.Flags().DurationVar(&tick, "tick", 0, "also wake main this often with no event (0: never)")
 	return cmd
 }

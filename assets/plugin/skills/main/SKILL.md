@@ -1,6 +1,6 @@
 ---
 name: main
-description: The main session (/tix:main, opened by tix main in a herdr pane) - the orchestration layer over the vault's ticket sessions. It syncs the vault, keeps the queue of tickets to work, starts and restarts ticket sessions (claude or kiro) in herdr, catches work stopped or marked finished too early, checks a handed-over ticket and runs /tix:ship, stops the session at merge-ready and watches the pull requests itself (restarting it for threads, CI or a rebase), and closes merged tickets. Its state is main.md, so a restarted main picks up where it left off. It never does ticket work itself.
+description: The main session (/tix:main, opened by tix main in a herdr pane) - the orchestration layer over the vault's ticket sessions. It syncs the vault, keeps the queue of tickets to work, starts and restarts ticket sessions (claude or kiro) in herdr, catches work stopped or marked finished too early, checks a handed-over ticket and runs /tix:ship, stops the session at merge-ready and watches the pull requests itself (restarting it for threads, CI or a rebase), and closes merged tickets. Its host service sweeps the projects for known vulnerabilities every 6 hours (tix cve update); main assesses and files the major ones under the configured epic and asks to start them. Its state is main.md, so a restarted main picks up where it left off. It never does ticket work itself.
 disable-model-invocation: true
 argument-hint: "[watch [<events>]]"
 ---
@@ -13,9 +13,9 @@ the user answers its questions there (herdr tells them). Your cwd and the vault 
 vault's `AGENTS.md` once (`rg -n '^## '`, then "Note Rules"). The host service prompts you
 with `/tix:main watch <events>` only when something you act on happened (a session of yours
 exited, ended a turn while `checking`/`shipping`/`feedback` or sat idle 30m while `working`; a
-note's `status:` changed; a watched PR changed; its hourly sync brought new tickets): each is
-one pass (2), and each pass is a turn herdr notifies the user of, so it never polls on its own.
-The user's own messages come first.
+note's `status:` changed; a watched PR changed; its hourly sync brought new tickets; a security
+sweep needs you (`security.md`, beside this skill)): each is one pass (2), and each pass is a
+turn herdr notifies the user of, so it never polls on its own. The user's own messages come first.
 
 ## Tools
 - `tix main list` (`ID agent state pane ticket-status main|user`), `sync`, `start <ID>
@@ -46,13 +46,13 @@ it after every action, so a new main resumes from it.
   `From main: <what you found>` (a gap from 2.3). Never ticket work of your own.
 - A session that's `blocked`, or idle with an open `lead→user` entry in `relay.md` or
   `status: blocked`, waits on the user: leave it alone, and don't count it as stopped.
-- Never merge, approve or decline a PR; never edit repos, commit or push. Vault writes: only a
-  ticket's `status:` (2.4, 2.6), under `tix vault lock acquire <vault> main` / `release`.
+- Never merge, approve or decline a PR; never edit repos, commit or push. Vault writes: a ticket's
+  `status:` (2.4, 2.6), under `tix vault lock acquire <vault> main` / `release`; `security/` only via `tix cve set`.
 - A session reporting a usage limit: start nothing more on that agent until the limit resets;
   queue on the other if the user allows it.
 - **What you tell the user**, one line each, and nothing else (a pass often ends with no text):
   your actions (a session started, restarted, re-prompted or stopped; a check's gap; a ticket
-  shipped, closed, reopened or `stuck`; starts paused for a limit; tickets proposed or queued),
+  shipped, closed, reopened or `stuck`; starts paused; tickets proposed or queued; the sweep's),
   your questions, and what the steps say to tell. Never what herdr already shows them: sessions
   waiting on the user (questions, approvals, `blocked`), or other tickets' stage changes.
 - **Covered or ignored tickets** (`tix start --list` marks them; `start` refuses them and says

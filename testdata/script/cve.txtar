@@ -1,0 +1,33 @@
+# tix cve: the register's due check, decisions and issue text, offline
+mkdir home/Documents/Obsidian/a/.obsidian
+
+exec tix cve due
+stdout '^due last - next -$'
+
+exec tix cve set --epic SEC-7 --label SECURITY
+exists home/Documents/Obsidian/a/security/security.md
+exists home/Documents/Obsidian/a/security/.state.json
+
+cp state.json home/Documents/Obsidian/a/security/.state.json
+exec tix cve due --every 6h
+stdout '^not-due last 2099-01-01T00:00:00Z next 2099-01-01T06:00:00Z$'
+exec tix cve update
+stdout '^not due: last 2099-01-01T00:00:00Z, next 2099-01-01T06:00:00Z$'
+
+exec tix cve show CVE-2026-1 --jira
+stdout '"project":"SEC"'
+stdout '"epic":"SEC-7"'
+stdout '"summary":"\[api\] RCE in lib \(CVE-2026-1\)"'
+stdout 'lib 1.0 → 2.0'
+
+! exec tix cve set CVE-2026-1
+stderr 'give --ticket or --assess'
+! exec tix cve set CVE-0000-0 --ticket SEC-9
+stderr 'CVE-0000-0 isn.t in the register'
+exec tix cve set CVE-2026-1 --ticket SEC-8
+grep '\| SEC-8 \|' home/Documents/Obsidian/a/security/security.md
+grep 'ticket: "SEC-8"' home/Documents/Obsidian/a/security/advisories/CVE-2026-1.md
+grep '## Needs action\nNothing.' home/Documents/Obsidian/a/security/security.md
+
+-- state.json --
+{"config":{"epic":"SEC-7","labels":["SECURITY"]},"lastSweep":"2099-01-01T00:00:00Z","rows":{"CVE-2026-1":{"id":"CVE-2026-1","kind":"finding","status":"resolvable","firstSeen":"2098-12-31","since":"2098-12-31","finding":{"id":"CVE-2026-1","aliases":[],"priority":"P1","major":true,"resolvable":true,"severity":"CRITICAL","network":true,"rce":true,"epss":0.5,"summary":"RCE in lib","packages":[{"repo":"bb/acme/api","file":"package-lock.json","ecosystem":"npm","name":"lib","version":"1.0","fix":"2.0"}]}}}}

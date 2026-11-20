@@ -372,6 +372,7 @@ clusters, and the vault's `AGENTS.md` has the rules.
 | `tix spec repo checkout\|fetch\|ls\|reset` | Inside a spec session: exploration clones of any branch, to build and test in (never committed). |
 | `tix teach [--continue] [<topic>] \| --list` | Learn a topic (kebab-case) over many sessions: a session running `/tix:teach <topic>` in this terminal, with the vault and every repo read-only. No topic: pick one of the vault's `learning/*/` or type a new one (without a terminal it prints them and fails). A new conversation each time; `--continue` (`-c`) reopens the topic's last one. `--list` prints the topics. See "Learning a topic". |
 | `tix main [--continue] [--agent claude\|kiro]` | In a herdr pane: the main session (`/tix:main`) in `<workRoot>/.main-<vault>`, with its host service. Inside it, `tix main list`, `sync`, `start <ID> [--agent] [--feedback] [--continue]`, `prompt <ID> <text>`, `read <ID>`, `wait <ID>`, `stop <ID>` and `clean <ID>` call that service; exit 1 refused or failed, 4 no service. See "Main session". |
+| `tix cve sweep\|update\|due\|set\|show` | `sweep [--json] [--days N] [--repo <slug>]...` checks every main clone's pinned dependencies and container images against OSV.dev, CISA KEV, FIRST EPSS and NVD, highest priority first, with each fix version (exit 3 when there's a P1); `update [--every 6h] [--force]` sweeps when due and writes the vault's `security/` register; `due` prints the last and next sweep; `set <ID> --ticket <KEY>\|--assess <text>` and `set --epic <KEY>` record decisions; `show <ID> [--jira]` prints a row or the issue to file. See "Security sweep". |
 | `tix claude [claude args]` | `claude` in the current repo with the vault as its knowledge base: the vault added, the plugin's skills, and the repo's project notes named in the system prompt. |
 | `tix layout [--apply]` | Move repos into `<projectsRoot>/<provider>/<owner>/<repo>`. |
 | `tix vault lock` / `tix vault links` | Used by `/tix:save`: serialize writes to shared notes, and move notes without breaking wikilinks. |
@@ -678,7 +679,28 @@ flowchart TB
   notifies you of): a session of main's exiting, ending a turn while
   checking or shipping, or idle 30 minutes while working; a note's status
   changing; a watched pull request changing (the service reads them every
-  10 minutes itself); an hourly sync bringing new tickets.
+  10 minutes itself); an hourly sync bringing new tickets; every 6 hours,
+  the security sweep.
+- **Security sweep:** main's host service runs `tix cve update` on the host
+  whenever the last sweep recorded in the vault's `security/.state.json` is 6
+  hours old (`tix main serve --cve-sweep-each`; a restart doesn't sweep again,
+  `tix cve due` prints the last and next times). The sweep reads every main
+  clone's lockfiles and manifests (Go, npm, Maven, Gradle, PyPI, crates.io,
+  RubyGems, Pub, Packagist) and container images, and checks them against
+  OSV.dev, CISA KEV, FIRST EPSS and NVD (NVD for the runtimes the images run,
+  such as nginx or Java). Package names and versions go to those public
+  services; workspace, path and git sources don't. Findings are merged across
+  their IDs, ranked P1 to P4 (P1: in KEV, or remote code execution over the
+  network rated critical or high) and given the fixing version where there is
+  one; anything the sweep can't read is listed as unscanned. The merge into
+  the state is code, not the agent: a row moves to resolvable when a fix
+  ships, to resolved only when its source ran and its files were read, and
+  keeps its ranking when KEV or EPSS failed. It writes `security/security.md`
+  and `security/advisories/<ID>.md`, and wakes main only when a major issue
+  needs an assessment or a ticket, or a ticketed one became fixable. Main
+  records its decisions with `tix cve set`, files major issues under the epic
+  `tix cve set --epic` names (text from `tix cve show <ID> --jira`) and asks
+  you whether to start them. The playbook is the main skill's `security.md`.
 - **Autopilot** (`autopilot: stack` in `board.md`, the default): after the
   hand-over the PO runs `tix:ship`. It tidies and signs the ticket branches,
   pushes them with `/tix:save`, opens one pull request per repo (ready for

@@ -2,6 +2,7 @@ package conductor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,122 @@ func TestWakerSyncAndPRs(t *testing.T) {
 	}
 	if r := do(t, s, Request{Op: "unwatch", ID: "PROJ-2"}); r.Status != "ok" || len(s.watched()) != 0 {
 		t.Errorf("unwatch: %+v %v", r, s.watched())
+	}
+}
+
+func writeSweepState(t *testing.T, s *Server, last time.Time) {
+	t.Helper()
+	dir := filepath.Join(s.Vault, SecurityDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"config":{},"lastSweep":"` + last.UTC().Format(time.RFC3339) + `","rows":{}}`
+	if err := os.WriteFile(filepath.Join(dir, ".state.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stepUntil(t *testing.T, w *Waker, at time.Time) string {
+	t.Helper()
+	ctx := context.Background()
+	for range 200 {
+		if got := w.Step(ctx, at); got != "" {
+			return got
+		}
+		if !w.sweeping {
+			return ""
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the sweep never finished")
+	return ""
+}
+
+func TestWakerSecuritySweep(t *testing.T) {
+	s, f := setup(t)
+	f.agents = nil
+	f.main = "idle"
+	var runs [][]string
+	result := `{"swept":"x","complete":true,"p1":1,"p2":0,"open":3,"due":true,"actions":[{"id":"CVE-2026-1","priority":"P1","need":"ticket"}],"changes":[{"id":"CVE-2025-9","priority":"P3","what":"now resolvable"}],"tell":["ticket CVE-2026-1","now resolvable CVE-2025-9"]}`
+	f.tixOut = func(args []string) ([]byte, error) {
+		runs = append(runs, args)
+		if args[1] == "ack" {
+			return nil, nil
+		}
+		writeSweepState(t, s, time.Now())
+		return []byte(result), nil
+	}
+	w := &Waker{S: s, Pane: "w0:p1", Command: "/tix:main watch", MainFile: filepath.Join(t.TempDir(), "none.md"),
+		Debounce: time.Minute, SweepEach: 6 * time.Hour}
+	t0 := time.Now()
+	w.lastWake = t0
+	w.Step(context.Background(), t0)
+	if got := stepUntil(t, w, t0.Add(2*time.Minute)); got != "/tix:main watch security sweep 1 P1 0 P2, ticket CVE-2026-1, now resolvable CVE-2025-9" {
+		t.Errorf("never swept, so it sweeps at start: %q", got)
+	}
+	snapshot := func() [][]string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return append([][]string(nil), runs...)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(snapshot()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r := snapshot(); len(r) != 2 || strings.Join(r[0], " ") != "cve update --every 6h0m0s --json" ||
+		strings.Join(r[1], "|") != "cve|ack|--|ticket CVE-2026-1|now resolvable CVE-2025-9" {
+		t.Errorf("runs %v", r)
+	}
+	if got := stepUntil(t, w, t0.Add(5*time.Hour)); got != "" || len(snapshot()) != 2 {
+		t.Errorf("swept again before it was due: %q %v", got, snapshot())
+	}
+
+	result = `{"swept":"y","complete":true,"p1":0,"p2":0,"open":3,"due":true}`
+	writeSweepState(t, s, t0.Add(-7*time.Hour))
+	w.sweepTry = time.Time{}
+	if got := stepUntil(t, w, t0.Add(10*time.Minute)); got != "" || len(snapshot()) != 3 {
+		t.Errorf("a due sweep with nothing to act on: woke %q, runs %d", got, len(snapshot()))
+	}
+
+	s2, f2 := setup(t)
+	f2.agents, f2.main = nil, "idle"
+	writeSweepState(t, s2, t0.Add(-time.Hour))
+	var n int
+	f2.tixOut = func(args []string) ([]byte, error) { n++; return nil, errors.New("network down") }
+	w2 := &Waker{S: s2, Pane: "w0:p1", Command: "/tix:main watch", MainFile: filepath.Join(t.TempDir(), "none.md"),
+		Debounce: time.Minute, SweepEach: 6 * time.Hour}
+	w2.lastWake = t0
+	if got := stepUntil(t, w2, t0); got != "" || n != 0 {
+		t.Errorf("a recent sweep on disk (main restarted) swept again: %q %d", got, n)
+	}
+	if got := stepUntil(t, w2, t0.Add(5*time.Hour+2*time.Minute)); !strings.Contains(got, "security sweep failed: network down") || n != 1 {
+		t.Errorf("a failed sweep: %q %d", got, n)
+	}
+	if got := stepUntil(t, w2, t0.Add(5*time.Hour+20*time.Minute)); n != 1 {
+		t.Errorf("retried within %s: %q %d", SweepRetry, got, n)
+	}
+	if got := stepUntil(t, w2, t0.Add(5*time.Hour+33*time.Minute)); got != "" || n != 2 {
+		t.Errorf("no retry after %s, or the same failure told twice: %q %d", SweepRetry, got, n)
+	}
+
+	s3, f3 := setup(t)
+	f3.agents, f3.main = nil, "idle"
+	if err := os.MkdirAll(filepath.Join(s3.Vault, SecurityDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s3.Vault, SecurityDir, ".state.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var m int
+	f3.tixOut = func(args []string) ([]byte, error) {
+		m++
+		return nil, errors.New(".state.json: unexpected end of JSON input")
+	}
+	w3 := &Waker{S: s3, Pane: "w0:p1", Command: "/tix:main watch", MainFile: filepath.Join(t.TempDir(), "none.md"),
+		Debounce: time.Minute, SweepEach: 6 * time.Hour}
+	w3.lastWake = t0
+	if got := stepUntil(t, w3, t0.Add(2*time.Minute)); !strings.Contains(got, "security sweep failed: .state.json") || m != 1 {
+		t.Errorf("a corrupt state stopped the sweeps silently: %q %d", got, m)
 	}
 }
 

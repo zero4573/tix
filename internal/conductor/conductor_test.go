@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,16 +23,23 @@ type fakeHerdr struct {
 	calls  [][]string
 	main   string
 	onTix  func(args []string)
+	tixOut func(args []string) ([]byte, error)
 	n      int
+	mu     sync.Mutex
 }
 
 func (f *fakeHerdr) run(_ context.Context, env []string, name string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, append([]string{name}, args...))
 	cmd := strings.Join(args[:min(2, len(args))], " ")
 	switch {
 	case name == "tix":
 		if f.onTix != nil {
 			f.onTix(args)
+		}
+		if f.tixOut != nil {
+			return f.tixOut(args)
 		}
 		return []byte("ran " + strings.Join(args, " ") + "\n"), nil
 	case cmd == "agent list":

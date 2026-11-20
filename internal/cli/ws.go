@@ -44,7 +44,7 @@ workspace's repos are recorded in <workRoot>/<ID>/workspace.json.
 A <repo> argument is a slug or <provider>/<owner>/<repo>.`,
 	}
 	cmd.AddCommand(wsReposCmd(), wsCloneCmd(), wsAddCmd(), wsLsCmd(), wsDiffCmd(),
-		wsRmCmd(), wsMarkCmd(), wsMarksCmd(), wsFetchCmd(), wsGcCmd(),
+		wsDiffCheckCmd(), wsRmCmd(), wsMarkCmd(), wsMarksCmd(), wsFetchCmd(), wsGcCmd(),
 		wsTaskCleanCmd())
 	return cmd
 }

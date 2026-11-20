@@ -1,0 +1,44 @@
+# tix ws diff-check: added comments are an informational note; kept kinds and moved comments are not
+expand gitconfig
+exec git init -q -b main repo
+exec git -C repo add -A
+exec git -C repo commit -q -m init
+exec git -C repo checkout -q -b topic
+
+cp a_v2.go repo/a.go
+cp App.tsx repo/web/App.tsx
+exec git -C repo add -A
+exec git -C repo commit -q -m change
+exec tix ws diff-check -C repo main..topic
+stdout '^note\tcomment-added\t2\t[0-9a-f]+\ta.go$'
+stdout '^note\tcomment-added\t1\t[0-9a-f]+\tweb/App.tsx$'
+! stdout 'testdata'
+! stderr .
+
+-- gitconfig --
+[user]
+	name = Jane Doe
+	email = jane@example.com
+-- repo/a.go --
+package a
+
+// Old explains A
+func A() {}
+-- repo/testdata/fixture.go --
+package fixture
+-- repo/web/.keep --
+-- a_v2.go --
+package a
+
+//go:build linux
+
+// Old explains A
+func A() {}
+
+// New says what B does
+// across two lines
+func B() {}
+-- App.tsx --
+// eslint-disable-next-line react-hooks/exhaustive-deps
+// prettier-ignore
+export const App = () => null

@@ -1,0 +1,279 @@
+# tix ws diff-check --ticket: the ticket's own vault-only IDs in added lines
+# and commit messages
+expand gitconfig
+env V=home/Documents/Obsidian/a
+mkdir $V/.obsidian $V/tickets/manual/PROJ-12/reviews
+cp empty $V/tickets/manual/PROJ-12/PROJ-12.md
+cp relay.md $V/tickets/manual/PROJ-12/relay.md
+cp review.md $V/tickets/manual/PROJ-12/reviews/wave-1-acme.md
+exec git init -q -b main repo
+cp readme repo/README.md
+exec git -C repo add -A
+exec git -C repo commit -q -m init
+exec git -C repo checkout -q -b topic
+
+# clean, and a generic R-9090 that is not in the relay passes
+cp generic repo/g.txt
+exec git -C repo add g.txt
+exec git -C repo commit -q -m 'generic R-9090'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+! stderr .
+
+# a hit in a file
+cp hit repo/h.txt
+exec git -C repo add h.txt
+exec git -C repo commit -q -m 'add h'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\tR-9093\t[0-9a-f]+\th.txt$'
+stdout '^vault-id\tW1-acme-M01\t[0-9a-f]+\th.txt$'
+! stdout 'g.txt'
+stderr '2 vault-only ID\(s\) of PROJ-12 in the range'
+
+# a hit in a message
+exec git -C repo reset -q --hard main
+cp generic repo/g.txt
+exec git -C repo add g.txt
+exec git -C repo commit -q -m 'work on PROJ-12'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\tPROJ-12\t[0-9a-f]+\t:commit-message$'
+
+# rev-list order: the newer commit's ID line comes before the older
+# commit's size line
+exec git -C repo reset -q --hard main
+exec sh -c 'printf "a\\000b\\n" > repo/b.dat'
+exec git -C repo add b.dat
+exec git -C repo commit -q -m 'add a binary'
+cp hit repo/h.txt
+exec git -C repo add h.txt
+exec git -C repo commit -q -m 'add h'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '(?s)\Avault-id\tR-9093\t[0-9a-f]+\th.txt\nvault-id\tW1-acme-M01\t[0-9a-f]+\th.txt\nbinary\t[0-9]+\t[0-9a-f]+\tb.dat\n\z'
+
+# a line kept from the base passes, even reworded; an ID mentioned only in
+# the relay's prose (R-9077) is not in the set
+exec git -C repo reset -q --hard main
+cp kept repo/README.md
+exec git -C repo commit -q -am 'base line'
+exec git -C repo branch -f main
+cp reworded repo/README.md
+exec git -C repo commit -q -am 'reword'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+
+# without --ticket: unchanged
+exec tix ws diff-check -C repo main..topic
+! stdout .
+! stderr .
+
+# an unknown ticket
+! exec tix ws diff-check -C repo --ticket NOPE-1 main..topic
+stderr 'not found'
+
+# wave-test: a test named after one of the ticket's waves (w1, from
+# reviews/wave-1-acme.md), only in test files and only when added
+exec git -C repo reset -q --hard main
+cp wavetest repo/retry_test.go
+cp wavetest repo/notes.go
+exec git -C repo add -A
+exec git -C repo commit -q -m 'add retry test'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^wave-test\tTestW1Retry\t[0-9a-f]+\tretry_test.go$'
+! stdout 'notes.go'
+! stdout 'TestW12Other'
+stderr '1 test name\(s\) built from a wave of PROJ-12'
+# without --ticket nothing is known about waves
+exec tix ws diff-check -C repo main..topic
+! stdout .
+# kept from the base: passes
+exec git -C repo branch -f main
+cp wavetest-edited repo/retry_test.go
+exec git -C repo commit -q -am 'edit the retry test'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout 'wave-test'
+stdout '^note\ttest-changed\tTestW1Retry\t'
+
+# commit-style: ticket puts the ticket ID in every subject, so there it is
+# no vault-id; in the body and in files it still is, and a subject off the
+# style is a note
+cp board-ticket $V/tickets/manual/PROJ-12/board.md
+exec git -C repo reset -q --hard main
+cp generic repo/g.txt
+exec git -C repo add g.txt
+exec git -C repo commit -q -m 'PROJ-12: add g'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+! stderr .
+exec git -C repo commit -q --amend -m 'PROJ-12 add g'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '(?s)\Anote\tcommit-style\tticket\t[0-9a-f]+\t:commit-message\n\z'
+exec git -C repo commit -q --amend -m 'PROJ-12: add g' -m 'as PROJ-12 asked'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\tPROJ-12\t[0-9a-f]+\t:commit-message$'
+# a repo whose own history writes the key without a colon is held to that
+exec git -C repo commit -q --amend -m 'PROJ-12: add g'
+exec git -C repo checkout -q main
+exec git -C repo commit -q --allow-empty -m 'PROJ-3 one'
+exec git -C repo commit -q --allow-empty -m 'PROJ-4 two'
+exec git -C repo checkout -q topic
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^note\tcommit-style\tticket\t'
+exec git -C repo commit -q --amend -m 'PROJ-12 add g'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+exec git -C repo checkout -q main
+exec git -C repo reset -q --hard HEAD~2
+exec git -C repo checkout -q topic
+# conventional: the ID in a subject is flagged as before, and the style noted
+cp board-conventional $V/tickets/manual/PROJ-12/board.md
+exec git -C repo commit -q --amend -m 'PROJ-12: add g'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\tPROJ-12\t[0-9a-f]+\t:commit-message$'
+stdout '^note\tcommit-style\tconventional\t[0-9a-f]+\t:commit-message$'
+exec git -C repo commit -q --amend -m 'feat(g): add g'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+rm $V/tickets/manual/PROJ-12/board.md
+
+# a commit message that names one of the ticket's waves (w1), a merge's too
+exec git -C repo reset -q --hard main
+cp generic repo/g.txt
+exec git -C repo add g.txt
+exec git -C repo commit -q -m 'wave 2 is not one of its waves'
+exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+! stdout .
+exec git -C repo commit -q --amend -m 'Wave 1 review fixes'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\twave 1\t[0-9a-f]+\t:commit-message$'
+stderr '1 commit message\(s\) name a wave of PROJ-12'
+exec git -C repo commit -q --amend -m 'add g'
+exec git -C repo checkout -q -b side main
+exec git -C repo commit -q --allow-empty -m side
+exec git -C repo checkout -q topic
+exec git -C repo merge -q --no-ff side -m 'merge the wave-1 fixes'
+! exec tix ws diff-check -C repo --ticket PROJ-12 main..topic
+stdout '^vault-id\twave 1\t[0-9a-f]+\t:commit-message$'
+exec git -C repo branch -q -D side
+
+# spec-id: a requirement ID taken twice in specs/
+exec git init -q -b main srepo
+mkdir srepo/specs/orders srepo/specs/billing
+cp spec-orders srepo/specs/orders/spec.md
+exec git -C srepo add -A
+exec git -C srepo commit -q -m init
+exec git -C srepo checkout -q -b topic
+
+# clean: a new ID
+cp spec-orders-2 srepo/specs/orders/spec.md
+exec git -C srepo commit -q -am 'add req 2'
+exec tix ws diff-check -C srepo main..topic
+! stdout .
+! stderr .
+
+# a duplicate within the range
+cp spec-billing-dup srepo/specs/billing/spec.md
+exec git -C srepo add -A
+exec git -C srepo commit -q -m 'billing reuses the id'
+! exec tix ws diff-check -C srepo main..topic
+stdout '^spec-id\tREQ-ORD-2\t[0-9a-f]+\tspecs/billing/spec.md$'
+stdout '^spec-id\tREQ-ORD-2\t[0-9a-f]+\tspecs/orders/spec.md$'
+stderr '2 requirement ID\(s\) taken twice'
+
+# a clash with the base: main took REQ-ORD-2 while topic added it too
+exec git -C srepo checkout -q topic
+exec git -C srepo reset -q --hard main
+exec git -C srepo checkout -q -b other
+cp spec-orders-2 srepo/specs/orders/spec.md
+exec git -C srepo commit -q -am 'other adds req 2'
+exec git -C srepo checkout -q topic
+cp spec-orders-2 srepo/specs/orders/spec.md
+exec git -C srepo commit -q -am 'topic adds req 2'
+! exec tix ws diff-check -C srepo other..topic
+stdout '^spec-id\tREQ-ORD-2\t[0-9a-f]+\tspecs/orders/spec.md$'
+# against the unchanged main it is clean
+exec tix ws diff-check -C srepo main..topic
+! stdout .
+
+# no specs/: skipped silently
+exec tix ws diff-check -C repo main..topic
+! stdout 'spec-id'
+
+-- board-ticket --
+---
+commit-style: ticket
+---
+-- board-conventional --
+---
+commit-style: conventional
+---
+-- empty --
+-- readme --
+acme
+-- relay.md --
+R-9093 · 2026-01-02 · user→lead · decision · as R-9077 said · copied
+-- review.md --
+- W1-acme-M01 · f:1 · problem
+-- kept --
+Ask user: none | R-9093: q
+-- reworded --
+Ask user: none | R-9093: question, see R-9077
+-- generic --
+see R-9090 for details
+-- hit --
+the R-9093 decision, finding W1-acme-M01
+-- gitconfig --
+[user]
+	name = Jane Doe
+	email = jane@example.com
+-- spec-orders --
+---
+capability: orders
+prefix: ORD
+---
+# Orders
+
+## Requirements
+
+### REQ-ORD-1 · First
+status: proposed
+The system SHALL do one.
+-- spec-orders-2 --
+---
+capability: orders
+prefix: ORD
+---
+# Orders
+
+## Requirements
+
+### REQ-ORD-1 · First
+status: proposed
+The system SHALL do one.
+
+### REQ-ORD-2 · Second
+status: proposed
+The system SHALL do two.
+-- spec-billing-dup --
+---
+capability: billing
+prefix: BIL
+---
+# Billing
+
+## Requirements
+
+### REQ-ORD-2 · Taken
+status: proposed
+The system SHALL bill.
+-- wavetest --
+package acme
+
+func TestW1Retry(t *testing.T) {}
+
+func TestW12Other(t *testing.T) {}
+-- wavetest-edited --
+package acme
+
+func TestW1Retry(t *testing.T) { t.Log("edited") }
+
+func TestW12Other(t *testing.T) {}

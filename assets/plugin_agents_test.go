@@ -1,0 +1,848 @@
+package assets
+
+import (
+	"io/fs"
+	"os"
+	"strings"
+	"testing"
+)
+
+func frontmatter(t *testing.T, data string) []string {
+	t.Helper()
+	if !strings.HasPrefix(data, "---\n") {
+		t.Fatal("no frontmatter")
+	}
+	end := strings.Index(data[4:], "\n---\n")
+	if end < 0 {
+		t.Fatal("unterminated frontmatter")
+	}
+	return strings.Split(data[4:4+end], "\n")
+}
+
+func field(lines []string, key string) (string, []string, bool) {
+	for i, l := range lines {
+		if !strings.HasPrefix(l, key+":") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(l, key+":"))
+		var items []string
+		for _, n := range lines[i+1:] {
+			if !strings.HasPrefix(n, "  - ") {
+				break
+			}
+			items = append(items, strings.TrimSpace(strings.TrimPrefix(n, "  - ")))
+		}
+		return v, items, true
+	}
+	return "", nil, false
+}
+
+func TestPluginAgentsListToolsPinModelsAndLeadCannotSpawnOrAskUser(t *testing.T) {
+	for _, gone := range []string{"product-owner", "architect", "developer", "qa"} {
+		if _, err := fs.Stat(Files, "plugin/agents/"+gone+".md"); err == nil {
+			t.Errorf("role agent %s.md still ships", gone)
+		}
+	}
+	want := map[string]bool{"task": true, "mechanical": true, "reviewer": true, "reviewer-deep": true, "lead": true, "analyst": true, "spec-writer": true,
+		"designer": true, "verifier": true, "comment-sicko": true, "judge": true, "summarizer": true}
+	entries, err := fs.ReadDir(Files, "plugin/agents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := strings.TrimSuffix(e.Name(), ".md")
+		if !want[name] {
+			t.Errorf("unexpected agent %s", e.Name())
+			continue
+		}
+		delete(want, name)
+		data, err := fs.ReadFile(Files, "plugin/agents/"+e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm := frontmatter(t, string(data))
+		if v, _, _ := field(fm, "name"); v != name {
+			t.Errorf("%s: name %q", e.Name(), v)
+		}
+		model, _, _ := field(fm, "model")
+		if name == "lead" {
+			if model != "inherit" {
+				t.Errorf("lead.md: model %q, want inherit (the session default)", model)
+			}
+		} else if model == "" || model == "inherit" {
+			t.Errorf("%s: no fixed model", e.Name())
+		}
+		tools, _, ok := field(fm, "tools")
+		if !ok || tools == "" {
+			t.Errorf("%s: no explicit tools list", e.Name())
+		}
+		has := map[string]bool{}
+		for _, tool := range strings.Split(tools, ",") {
+			tool = strings.TrimSpace(tool)
+			has[tool] = true
+			if tool == "Agent" || tool == "Task" || tool == "AskUserQuestion" || strings.HasPrefix(tool, "mcp__") {
+				t.Errorf("%s: tool %s isn't allowed", e.Name(), tool)
+			}
+		}
+		switch name {
+		case "lead":
+			for _, tool := range []string{"SendMessage", "Skill", "Edit", "Bash", "Grep", "Glob"} {
+				if !has[tool] {
+					t.Errorf("lead.md: no %s tool", tool)
+				}
+			}
+		case "analyst":
+			for _, tool := range []string{"Edit", "Write", "NotebookEdit", "SendMessage"} {
+				if has[tool] {
+					t.Errorf("analyst.md: read-only, but has %s", tool)
+				}
+			}
+			if !has["Grep"] || !has["Glob"] || !has["Read"] {
+				t.Error("analyst.md: needs Grep, Glob and Read")
+			}
+		case "spec-writer":
+			for _, tool := range []string{"Edit", "NotebookEdit", "SendMessage"} {
+				if has[tool] {
+					t.Errorf("spec-writer.md: writes one file only, but has %s", tool)
+				}
+			}
+			if !has["Write"] || !has["Read"] {
+				t.Error("spec-writer.md: needs Read and Write")
+			}
+		case "designer", "verifier", "comment-sicko":
+			for _, tool := range []string{"Edit", "NotebookEdit"} {
+				if has[tool] {
+					t.Errorf("%s: writes only its own files, but has %s", e.Name(), tool)
+				}
+			}
+		case "task", "mechanical":
+			if !has["SendMessage"] {
+				t.Errorf("%s: no SendMessage for blocking questions to the lead", e.Name())
+			}
+		}
+		_, skills, _ := field(fm, "skills")
+		if len(skills) == 0 && name != "analyst" && name != "spec-writer" {
+			t.Errorf("%s: preloads no brief skill", e.Name())
+		}
+		for _, s := range skills {
+			skill := strings.TrimPrefix(s, "tix:")
+			if _, err := fs.Stat(Files, "plugin/skills/"+skill+"/SKILL.md"); err != nil {
+				t.Errorf("%s: skill %s isn't in the plugin", e.Name(), s)
+			}
+			if !strings.Contains(string(data), "`"+s+"`") {
+				t.Errorf("%s: no Skill-tool fallback naming %s", e.Name(), s)
+			}
+		}
+	}
+	for name := range want {
+		t.Errorf("agent %s.md is missing", name)
+	}
+}
+
+func TestWaveSkillsAgreeWithTicketFolderContract(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	review := read("plugin/skills/wave-review/SKILL.md")
+	for _, s := range []string{"3 must-fix, 6 should-fix, 5 consider", "tickets/<source>/<ID>/reviews/wave-<N>-<slug>.md"} {
+		if !strings.Contains(review, s) {
+			t.Errorf("wave-review: missing %q", s)
+		}
+	}
+	lead := read("plugin/skills/lead/SKILL.md")
+	for _, df := range [][2]string{{"work-ticket", "kickoff.md"}, {"work-ticket", "handover.md"}, {"lead", "handover.md"}} {
+		dir, f := df[0], df[1]
+		if !strings.Contains(read("plugin/skills/"+dir+"/SKILL.md"), "`"+f+"`") {
+			t.Errorf("%s doesn't point at %s", dir, f)
+		}
+		read("plugin/skills/" + dir + "/" + f)
+	}
+	for _, s := range []string{"4 agents in flight", "`owns` overlap never share a wave", "--no-ff", "≤3 calls"} {
+		if !strings.Contains(lead, s) {
+			t.Errorf("lead: missing %q", s)
+		}
+	}
+	for _, tpl := range []string{"plan", "board", "task", "review", "backlog"} {
+		if !strings.Contains(lead, "`"+tpl+"`") {
+			t.Errorf("lead doesn't name template %s", tpl)
+		}
+		if _, err := fs.Stat(Scaffold, "vault-scaffold/templates/"+tpl+".md"); err != nil {
+			t.Errorf("template %s.md isn't shipped", tpl)
+		}
+	}
+	for _, tpl := range []string{"plan", "board", "task", "review", "backlog"} {
+		data, _ := fs.ReadFile(Scaffold, "vault-scaffold/templates/"+tpl+".md")
+		checkable := tpl == "board" || tpl == "review" || tpl == "backlog"
+		for _, line := range strings.Split(string(data), "\n") {
+			if !checkable && strings.HasPrefix(strings.TrimSpace(line), "- [") {
+				t.Errorf("template %s.md has a checkbox: %q", tpl, line)
+			}
+		}
+		if !strings.Contains(string(data), "type: "+tpl+"\n") {
+			t.Errorf("template %s.md: no type: %s", tpl, tpl)
+		}
+	}
+	for _, p := range []string{"lead", "task-agent"} {
+		s := read("plugin/skills/" + p + "/SKILL.md")
+		if strings.Contains(s, "exit=$?") || !strings.Contains(s, "rc=$?") || !strings.Contains(s, "echo exit=$rc") {
+			t.Errorf("%s: checks must report the command's exit code (rc=$? ... echo exit=$rc)", p)
+		}
+	}
+	if strings.Contains(lead, "..task/<ID>-NN-*") || !strings.Contains(lead, "git revert -m 1 <merge-sha>") {
+		t.Error("lead: task-branch glob in a revision, or merge revert without -m 1")
+	}
+	if !strings.Contains(read("plugin/skills/save/SKILL.md"), "`## Summary`") {
+		t.Error("save: should read each review's ## Summary section")
+	}
+	if data, _ := fs.ReadFile(Scaffold, "vault-scaffold/templates/review.md"); !strings.Contains(string(data), "\n## Summary\n") {
+		t.Error("review template has no ## Summary section")
+	}
+}
+
+func TestPOSpawnsLeadRelaysThroughCappedRelayAndLeadNeverAsksUser(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	lines := func(s string) int { return strings.Count(s, "\n") }
+
+	po := read("plugin/skills/work-ticket/SKILL.md")
+	if n := lines(po); n > 135 {
+		t.Errorf("work-ticket (PO) is %d lines, cap 135", n)
+	}
+	for _, s := range []string{
+		"`tix:lead`", "`tix:analyst`", "`relay.md`", "never only in chat", "≤3 calls",
+		"`lead:`", "`po:`", "AskUserQuestion", "Lead: <agentId>",
+		"`wait-tasks`", "`wait-user`", "`rotate`", "`handover-done`", "never two at once",
+		"**A compaction is always the same session**",
+	} {
+		if !strings.Contains(po, s) {
+			t.Errorf("work-ticket (PO): missing %q", s)
+		}
+	}
+	poFull := po + read("plugin/skills/work-ticket/workflow.md")
+	for _, s := range []string{"`## Open` holds **≤30** entries", "`## Closed` **≤40**", "about 100 lines"} {
+		if !strings.Contains(poFull, s) {
+			t.Errorf("work-ticket (PO) and workflow.md: missing %q", s)
+		}
+	}
+
+	leadSkill := read("plugin/skills/lead/SKILL.md")
+	if n := lines(leadSkill); n > 236 {
+		t.Errorf("lead/SKILL.md is %d lines, cap 236", n)
+	}
+	if n := lines(read("plugin/skills/lead/reference.md")); n > 80 {
+		t.Errorf("lead/reference.md is %d lines, cap 80", n)
+	}
+	lead := leadSkill + read("plugin/skills/lead/handover.md") + read("plugin/agents/lead.md")
+	if strings.Contains(lead, "AskUserQuestion") {
+		t.Error("the lead must not ask the user directly (AskUserQuestion)")
+	}
+	for _, s := range []string{"Spawn:", "Ask user:", "Status:", "Next: wait-tasks | wait-user | rotate | handover-done",
+		"relay.md", "## Open", "SendMessage", "`## Open` ≤30", "`## Closed` ≤40"} {
+		if !strings.Contains(lead, s) {
+			t.Errorf("lead: missing %q", s)
+		}
+	}
+	if !strings.Contains(read("plugin/skills/task-agent/SKILL.md"), "Lead: <agentId>") {
+		t.Error("task-agent: no optional Lead: <agentId> line for blocking questions")
+	}
+	if !strings.Contains(read("plugin/skills/wave-review/SKILL.md"), "your spawner, the PO") {
+		t.Error("wave-review: the reply goes to the spawner, the PO")
+	}
+
+	if strings.Contains(po+poFull, "po-refresh") {
+		t.Error("work-ticket still names the removed /tix:po-refresh")
+	}
+}
+
+func TestTidySkillFrontmatter(t *testing.T) {
+	for _, name := range []string{"tidy"} {
+		data, err := fs.ReadFile(Files, "plugin/skills/"+name+"/SKILL.md")
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		s := string(data)
+		fm := frontmatter(t, s)
+		if v, _, _ := field(fm, "name"); v != name {
+			t.Errorf("%s: name %q", name, v)
+		}
+		if v, _, _ := field(fm, "description"); len(v) < 40 {
+			t.Errorf("%s: description too short: %q", name, v)
+		}
+		if v, _, ok := field(fm, "disable-model-invocation"); ok && v == "true" {
+			t.Errorf("%s: must be model-invocable", name)
+		}
+		if n := strings.Count(s, "\n"); n > 100 {
+			t.Errorf("%s is %d lines, cap 100", name, n)
+		}
+	}
+}
+
+func TestAdaptedSkillsCarryAttributionAndSizeCap(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	const footer = "Adapted from mattpocock/skills (MIT); see THIRD_PARTY_NOTICES.md"
+	notices := read("plugin/THIRD_PARTY_NOTICES.md")
+	for _, s := range []string{"MIT License", "Copyright (c) 2026 Matt Pocock",
+		"THE SOFTWARE IS PROVIDED \"AS IS\"", "mattpocock/skills"} {
+		if !strings.Contains(notices, s) {
+			t.Errorf("THIRD_PARTY_NOTICES.md: missing %q", s)
+		}
+	}
+	for _, sk := range []struct {
+		name        string
+		cap         int
+		userInvoked bool
+	}{
+		{"clarify", 90, false}, {"diagnose", 90, false},
+		{"retro", 45, true}, {"teach", 120, true},
+	} {
+		s := read("plugin/skills/" + sk.name + "/SKILL.md")
+		fm := frontmatter(t, s)
+		if v, _, _ := field(fm, "name"); v != sk.name {
+			t.Errorf("%s: name %q", sk.name, v)
+		}
+		if v, _, _ := field(fm, "description"); len(v) < 40 {
+			t.Errorf("%s: description too short: %q", sk.name, v)
+		}
+		v, _, ok := field(fm, "disable-model-invocation")
+		if sk.userInvoked != (ok && v == "true") {
+			t.Errorf("%s: disable-model-invocation %q, want user-invoked=%v", sk.name, v, sk.userInvoked)
+		}
+		if n := strings.Count(s, "\n"); n > sk.cap {
+			t.Errorf("%s is %d lines, cap %d", sk.name, n, sk.cap)
+		}
+		if !strings.Contains(s, footer) {
+			t.Errorf("%s: no attribution footer", sk.name)
+		}
+		if !strings.Contains(notices, "`skills/"+sk.name+"`") {
+			t.Errorf("THIRD_PARTY_NOTICES.md doesn't list skills/%s", sk.name)
+		}
+	}
+
+	clarify := read("plugin/skills/clarify/SKILL.md")
+	for _, s := range []string{"AskUserQuestion", "**≤4 questions**", "(Recommended)", "`tix:analyst`",
+		"frontier", "skip", "--from user --to lead", "## Questions", "Brief:", "[NEEDS CLARIFICATION]",
+		"/tix:clarify questionnaire <who>", "tickets/<source>/<ID>/<ID>-questionnaire-<slug>.md"} {
+		if !strings.Contains(clarify, s) {
+			t.Errorf("clarify: missing %q", s)
+		}
+	}
+	for _, gone := range []string{"kb", "grill", "grilling", "questionnaire", "docs"} {
+		if _, err := fs.ReadFile(Files, "plugin/skills/"+gone+"/SKILL.md"); err == nil {
+			t.Errorf("skill %s was renamed or removed", gone)
+		}
+	}
+	po := read("plugin/skills/work-ticket/SKILL.md") + read("plugin/skills/work-ticket/kickoff.md")
+	for _, s := range []string{"`tix:clarify`", "/tix:clarify questionnaire", "<ID>-questionnaire-<slug>.md", "#follow-up"} {
+		if !strings.Contains(po, s) {
+			t.Errorf("PO (work-ticket, kickoff): missing %q", s)
+		}
+	}
+
+	diagnose := read("plugin/skills/diagnose/SKILL.md")
+	for _, s := range []string{"## 1. Build a feedback loop", "## 2. Reproduce", "## 3. Hypothesise",
+		"## 4. Fix", "## 5. Regression test", "<REDACTED>", "skills: [tix:diagnose]"} {
+		if !strings.Contains(diagnose, s) {
+			t.Errorf("diagnose: missing %q", s)
+		}
+	}
+	lead := read("plugin/skills/lead/SKILL.md") + read("plugin/skills/lead/reference.md")
+	for _, s := range []string{"`tix:diagnose`", "build the feedback loop", "`plan.md ## Root cause`", "`tix:clarify`"} {
+		if !strings.Contains(lead, s) {
+			t.Errorf("lead: missing %q", s)
+		}
+	}
+	if !strings.Contains(read("plugin/skills/task-agent/SKILL.md"), "skills: [tix:diagnose]") {
+		t.Error("task-agent: doesn't load the skills its task file lists")
+	}
+	handover := read("plugin/skills/lead/handover.md")
+	for _, s := range []string{"`/tix:retro`", "**at most 8**", "retro: <change>"} {
+		if !strings.Contains(handover, s) {
+			t.Errorf("handover: missing %q", s)
+		}
+	}
+
+	teach := read("plugin/skills/teach/SKILL.md")
+	for _, s := range []string{
+		"`learning/<topic>/`", "`<topic>.md`", "`<topic>-resources.md`", "`<topic>-glossary.md`",
+		"`<topic>-notes.md`", "`lessons/<topic>-NNNN-<name>.md`", "`reference/<topic>-<name>.md`",
+		"`records/<topic>-NNNN-<name>.md`", "`quizzes/<topic>-NNNN-<name>.html`",
+		"`learning-topic`", "`lesson`", "`learning-record`", "`learning-reference`",
+		"tix vault lock acquire <vault> teach-<topic>", "**WebSearch**", "**WebFetch**",
+		"zone of proximal development", "the same number of words", "## Wisdom",
+	} {
+		if !strings.Contains(teach, s) {
+			t.Errorf("teach: missing %q", s)
+		}
+	}
+}
+
+func TestScaffoldCarriesWhatPOLeadAndTeachRelyOn(t *testing.T) {
+	tpl := func(name string) string {
+		data, err := fs.ReadFile(Scaffold, "vault-scaffold/templates/"+name+".md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	relay := tpl("relay")
+	closed, open := strings.Index(relay, "\n## Closed\n"), strings.Index(relay, "\n## Open\n")
+	if closed < 0 || open < closed {
+		t.Error("relay template: ## Closed must come before ## Open (the PO tails Open)")
+	}
+	for _, s := range []string{"type: relay\n", `ticket: "[[TICKET-ID]]"`, "≤30", "≤40",
+		"<request|feature|feedback|question|answer|decision>", "<open|planned|answered|copied>", "`copied`"} {
+		if !strings.Contains(relay, s) {
+			t.Errorf("relay template: missing %q", s)
+		}
+	}
+	if strings.Contains(relay, "- [ ]") {
+		t.Error("relay template has a checkbox")
+	}
+	for _, s := range []string{"\nlead: none\n", "\nlead-since: \"\"\n", "\npo:\n  session: \"\"\n  agents: []\n"} {
+		if !strings.Contains(tpl("board"), s) {
+			t.Errorf("board template: missing %q", s)
+		}
+	}
+	if !strings.Contains(tpl("task"), "\nskills: []\n") {
+		t.Error("task template: no skills: []")
+	}
+	for name, want := range map[string][]string{
+		"learning-topic":     {"type: learning-topic\n", "## Mission", "## Lessons", "## Reference", "## Records"},
+		"lesson":             {"type: lesson\n", "number: ", "source:", "quiz:", "## Win", "## Lesson", "## Practice", "## Primary source"},
+		"learning-record":    {"type: learning-record\n", "number: ", "status: active\n", "superseded-by: \"\"\n", "## Evidence", "## Implications"},
+		"learning-reference": {"type: learning-reference\n", "sources: []\n"},
+	} {
+		text := tpl(name)
+		for _, s := range append(want, "projects: []\n", "topic: \"[[", "tags: [learning]") {
+			if !strings.Contains(text, s) {
+				t.Errorf("%s template: missing %q", name, s)
+			}
+		}
+	}
+	for _, sk := range []string{"spec", "recall", "save", "teach", "work-ticket", "lead", "task-agent", "wave-review"} {
+		b, err := fs.ReadFile(Files, "plugin/skills/"+sk+"/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "tix vault search") {
+			t.Errorf("skill %s does not mention tix vault search", sk)
+		}
+	}
+	data, _ := fs.ReadFile(Scaffold, "vault-scaffold/AGENTS.md")
+	agents := string(data)
+	for _, s := range []string{"relay.md", "`lead:`, `lead-since:` and `po:`", "### Learning topics", "tix teach",
+		"`learning/<topic>/`", "teach-<topic>`)", "questionnaire"} {
+		if !strings.Contains(agents, s) {
+			t.Errorf("vault AGENTS.md: missing %q", s)
+		}
+	}
+	workflow, _ := fs.ReadFile(Files, "plugin/skills/work-ticket/workflow.md")
+	for _, s := range []string{"`tix:lead`", "`tix:analyst`", "`tix:clarify`", "`tix:diagnose`",
+		"compacts by itself", "`/tix:retro`", "`lead:` and\n`po:`"} {
+		if !strings.Contains(string(workflow), s) {
+			t.Errorf("work-ticket/workflow.md: missing %q", s)
+		}
+	}
+	if n := strings.Count(agents, "\n"); n > 215 {
+		t.Errorf("vault AGENTS.md has %d lines, want at most 215", n)
+	}
+	for _, h := range []string{"\n### Who writes what\n", "\n### Ticket sources\n", "\n### Task lists\n", "\n## Note Rules\n"} {
+		if !strings.Contains(agents, h) {
+			t.Errorf("vault AGENTS.md: heading %q missing", strings.TrimSpace(h))
+		}
+	}
+}
+
+func TestTemplateHTMLCommentsHaveNoLineStartingWithCheckbox(t *testing.T) {
+	err := fs.WalkDir(Scaffold, "vault-scaffold/templates", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(Scaffold, p)
+		if err != nil {
+			return err
+		}
+		inComment := false
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, "<!--") {
+				inComment = true
+			}
+			if inComment && strings.HasPrefix(strings.TrimSpace(line), "- [") {
+				t.Errorf("%s:%d: comment line starts with a checkbox: %q", p, i+1, line)
+			}
+			if strings.Contains(line, "-->") {
+				inComment = false
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginSkillRulesMergeChainReviewerCapsAndTaskReport(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(data)), " ")
+	}
+	lead := read("plugin/skills/lead/SKILL.md")
+	review := read("plugin/skills/wave-review/SKILL.md")
+	task := read("plugin/skills/task-agent/SKILL.md")
+	wf := read("plugin/skills/work-ticket/workflow.md")
+	for name, c := range map[string]struct {
+		text string
+		want []string
+	}{
+		"lead": {lead, []string{
+			"merge `&&` checks `&&` board line", "can never leave a merged task `running`",
+			"Ancestry is no proof", "index($3,t)==1||index(t,$3)==1", "-m \"<subject>\"", "test `orphaned` lines only", "recorded, not re-merged",
+			"`git revert -m 1 <merge-sha>` it (never reset) and mark the line `partial`", "leaves no reflog and any `branch.<name>.*` config",
+			"git merge-base --is-ancestor <b> HEAD && git update-ref -d refs/heads/<b>",
+		}},
+		"wave-review": {review, []string{"timeout 300", "focused tests of the changed packages", "`confirmed`", "`unconfirmed`", "**3 must-fix, 6 should-fix, 5 consider**", "`regression of <earlier ID>`", "`pre-existing`"}},
+		"task-agent":  {task, []string{"`tix vault note set-section <ID>-NN-<slug> '## Report'", "leaves every other byte of the file as it was", "Never Edit, Write, truncate or redirect the task file itself", "never append a second", "Commit early", "read `git diff` before committing", "git status --short", "build outputs", "never `git add -A` blindly", "Never hand back while a command you started in the background still runs", "frontmatter `id:` is your task number"}},
+		"workflow":    {wf, []string{"A ticket that changes the plugin's own formats", "in the format of the plugin version"}},
+	} {
+		for _, s := range c.want {
+			if !strings.Contains(c.text, s) {
+				t.Errorf("%s: missing %q", name, s)
+			}
+		}
+	}
+	if strings.Contains(lead, "(`git branch -d`)") || strings.Contains(lead, "&& git branch -d") {
+		t.Error("lead: still deletes task branches with git branch -d")
+	}
+	if strings.Contains(task, "Append it to your task file") {
+		t.Error("task-agent: must not append a second ## Report")
+	}
+}
+
+func TestLeadSkillPointersToReferenceHeadingsResolve(t *testing.T) {
+	skill, err := Files.ReadFile("plugin/skills/lead/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := Files.ReadFile("plugin/skills/lead/reference.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handover, err := Files.ReadFile("plugin/skills/lead/handover.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(handover), "`reference.md`, \"Gate script\"") {
+		t.Error("lead/handover.md: no pointer to reference.md \"Gate script\"")
+	}
+	for _, h := range []string{"Board line", "Disposition line formats", "Gate script", "Ticket types"} {
+		if !strings.Contains(string(skill), "`reference.md`, \""+h+"\"") {
+			t.Errorf("lead/SKILL.md: no pointer to reference.md %q", h)
+		}
+		if !strings.Contains(string(ref), "\n## "+h) {
+			t.Errorf("lead/reference.md: no heading %q", h)
+		}
+	}
+}
+
+func TestSpecPlanningFlows(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(Files, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	spec := read("plugin/skills/spec/SKILL.md")
+	for _, s := range []string{"## Planning a change", "## Analyze", "`tix:clarify`", "`tix spec location <slug>`",
+		"`## Spec change`", "[NEEDS CLARIFICATION", "blocks filing", "`spec-draft.md`", "`tix spec check", "--json",
+		"`/tix:new-ticket`", "copy in the ticket folder", "`/tix:save` promotes", "Never edit a spec in analyze"} {
+		if !strings.Contains(spec, s) {
+			t.Errorf("spec skill: missing %q", s)
+		}
+	}
+	nt := read("plugin/skills/new-ticket/SKILL.md")
+	epic := read("plugin/skills/new-ticket/epic.md")
+	if !strings.Contains(nt, "`epic.md`") {
+		t.Error("new-ticket skill does not point to epic.md")
+	}
+	for _, s := range []string{"Epic", "`## Spec change`", "[NEEDS CLARIFICATION", "blocks filing", "`spec-draft.md`", "parent", "first"} {
+		if !strings.Contains(epic, s) {
+			t.Errorf("new-ticket epic flow: missing %q", s)
+		}
+	}
+}
+
+func TestSpecWorkflowLeadTaskAgentAndReviewerSides(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	lead := read("plugin/skills/lead/SKILL.md")
+	specs := read("plugin/skills/lead/specs.md")
+	has := func(name, text string, want ...string) {
+		for _, s := range want {
+			if !strings.Contains(text, s) {
+				t.Errorf("%s: missing %q", name, s)
+			}
+		}
+	}
+	has("lead/SKILL.md", lead, "`specs.md`", "tix relay add <ID>", "tix relay state <ID>", "never `>>` or `sed -i` on `relay.md`",
+		"<<'EOF'", "never an unquoted heredoc", "fixture sync", "goldens or fixtures another repo copies")
+	has("lead/specs.md", specs, "tix spec diff", "## Specs", "`ready`", "`requirements:`", "`## Interfaces`",
+		"only shapes private to this ticket's tasks", "never edit `specs/`", "`implemented`", "waits until that one is `merged`")
+	has("lead/handover.md", read("plugin/skills/lead/handover.md"), "## Specs", "`specs.md`")
+	has("agents/lead.md", read("plugin/agents/lead.md"), "ready specs")
+	task := read("plugin/skills/task-agent/SKILL.md")
+	has("task-agent", task, "`requirements:`", "cites each ID", "never edits `specs/`", "sed -n '/^## Report/,$p'",
+		"never hand back without it", "never a shell redirect that rewrites the task file")
+	has("wave-review", read("plugin/skills/wave-review/SKILL.md"), "`tix spec diff <ID>`", "`proposed` requirement",
+		"`implemented` one", "the PO flips them to `implemented`", "ticket-private shapes only")
+	if strings.Contains(lead, "`relay.md`: `R-nn") || strings.Contains(lead, "rg -o 'R-[0-9]+' relay.md") {
+		t.Error("lead/SKILL.md still allocates relay ids by hand")
+	}
+	has("AGENTS.md", read2(t, "../AGENTS.md"), "Specs over contracts", "`requirements:`")
+}
+
+func read2(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestSpecInitSkillGateDraftPathsWriterAndSkeleton(t *testing.T) {
+	read := func(p string) string {
+		b, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	skill := read("plugin/skills/spec-init/SKILL.md")
+	if n := strings.Count(skill, "\n"); n > 100 {
+		t.Errorf("spec-init: %d lines, cap 100", n)
+	}
+	for _, f := range []string{"name: spec-init\n", "description: ", "argument-hint: "} {
+		if !strings.Contains(skill, f) {
+			t.Errorf("spec-init: frontmatter lacks %q", f)
+		}
+	}
+	for _, s := range []string{"tix vault search", "top-level packages", "## 2. Gate", "Draft nothing before the approval",
+		"tix spec location", "/tix:new-ticket", "tix:spec-writer", "one message",
+		"tickets/<source>/<ID>/specs/<slug>/", "tickets/<source>/<ID>/spec-init/", "<capability>/spec.md",
+		"status: inferred", "file:line", "NEEDS CLARIFICATION", "depends-on", "docs/architecture.md",
+		"<out>README.md", "tix spec check --dir <out>", "tickets/<source>/<ID>/docs-architecture.md", "Shallow on purpose", "never a commit"} {
+		if !strings.Contains(skill, s) {
+			t.Errorf("spec-init: missing %q", s)
+		}
+	}
+	w := read("plugin/agents/spec-writer.md")
+	for _, s := range []string{"status: inferred", "evidence:", "tests:", "at most 3", "depends-on", "file:line", "Write only the output path"} {
+		if !strings.Contains(w, s) {
+			t.Errorf("spec-writer: missing %q", s)
+		}
+	}
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "`/tix:spec-init`") {
+		t.Error("README skill table doesn't list /tix:spec-init")
+	}
+}
+
+func TestSavePublishesSpecChangeAndNewTicketStubsChildUnderLead(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(data)), " ")
+	}
+	save := read("plugin/skills/save/SKILL.md")
+	for _, s := range []string{"`tix ticket publish <ID> --dry-run --description-file <f>`", "`tix ticket publish <ID> --description-file <f>`", "`tix spec promote <ID> --json`", "Check the JSON's `error` (or a non-zero exit) first", "when `others` is empty, say `projects/` was edited by hand or by an unknown ticket", "--resolve <slug>=theirs", "one question per clashing repo", "keep theirs, keep ours, merge by hand", "`tix spec promote <ID> --resolve <slug>=merged`", "`tix spec pin <ID>`", "`editJiraIssue`", "`getTransitionsForJiraIssue`",
+		"`transitionJiraIssue`", "ask **once** with AskUserQuestion", "`tix spec diff <ID>`", "`specs:` and `requirements:`",
+		"`tix vault links move`", "has no remote description", "are not reachable in this session"} {
+		if !strings.Contains(save, s) {
+			t.Errorf("save: missing %q", s)
+		}
+	}
+	if strings.Contains(save, "tix spec baseline") {
+		t.Error("save: names the removed tix spec baseline")
+	}
+	nt := read("plugin/skills/new-ticket/SKILL.md")
+	for _, s := range []string{"`tix ticket stub <NEW-ID> --source <source> --summary \"<title>\" --covered-by <lead>`",
+		"don't write that note by hand", "The PO tells the lead"} {
+		if !strings.Contains(nt, s) {
+			t.Errorf("new-ticket: missing %q", s)
+		}
+	}
+}
+
+func TestSkillsNeverAppendRelayByHand(t *testing.T) {
+	err := fs.WalkDir(Files, "plugin/skills", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+			return err
+		}
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			return err
+		}
+		text := strings.Join(strings.Fields(string(data)), " ")
+		for _, bad := range []string{"append `relay.md` line", "append one `relay.md` entry", "append a `relay.md` entry"} {
+			if strings.Contains(text, bad) {
+				t.Errorf("%s: %q (use tix relay add)", p, bad)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"clarify", "retro", "tidy"} {
+		data, err := fs.ReadFile(Files, "plugin/skills/"+p+"/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "tix relay add") {
+			t.Errorf("%s: no tix relay add", p)
+		}
+	}
+	data, _ := fs.ReadFile(Files, "plugin/skills/clarify/SKILL.md")
+	text := strings.Join(strings.Fields(string(data)), " ")
+	for _, s := range []string{"at most 200 characters", "plan.md` under `## Scope`", "a pointer"} {
+		if !strings.Contains(text, s) {
+			t.Errorf("clarify: missing %q", s)
+		}
+	}
+}
+
+func TestSkillsSpecPath(t *testing.T) {
+	err := fs.WalkDir(Files, "plugin/skills", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+			return err
+		}
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), "specs/<capability>.md") {
+			t.Errorf("%s: names specs/<capability>.md, want specs/<capability>/spec.md", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := fs.ReadFile(Files, "plugin/skills/lead/specs.md")
+	if !strings.Contains(string(data), "specs/<capability>/spec.md") {
+		t.Error("lead/specs.md: lacks specs/<capability>/spec.md")
+	}
+}
+
+func TestSaveOrdersSpecPromotionPublishAndLockRelease(t *testing.T) {
+	data, err := fs.ReadFile(Files, "plugin/skills/save/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	idx := func(s string) int {
+		i := strings.Index(text, s)
+		if i < 0 {
+			t.Fatalf("save: missing %q", s)
+		}
+		return i
+	}
+	promote := idx("`tix spec promote <ID> --json`")
+	links := idx("### 5. Check links")
+	push := idx("### 8. Push the ticket branches")
+	publish := idx("### 9. Publish the descriptions and offer transitions")
+	lock := idx("Run `tix vault lock release <vault> <ID>`")
+	if !(promote < links && links < lock && lock < push && push < publish) {
+		t.Errorf("save: step order wrong: promote %d links %d lock %d push %d publish %d", promote, links, lock, push, publish)
+	}
+	if pin := idx("`tix spec pin <ID>`"); pin < push || pin > publish {
+		t.Errorf("save: tix spec pin must follow the push (step 8): pin %d push %d publish %d", pin, push, publish)
+	}
+	for _, s := range []string{"`getTransitionsForJiraIssue`", "`transitionJiraIssue`", "`editJiraIssue`", "tix ticket publish"} {
+		if i := strings.Index(text, s); i < push {
+			t.Errorf("save: %s appears before the push step", s)
+		}
+	}
+	flat := strings.Join(strings.Fields(text), " ")
+	for _, s := range []string{"Decide **per ticket**", "each ticket in its `covers`", "name it and skip it", "never the bare date",
+		"`getJiraIssue` right before the edit", "never holds it"} {
+		if !strings.Contains(flat, s) {
+			t.Errorf("save: missing %q", s)
+		}
+	}
+}
+
+func TestNewTicketStubCoversSyncedChildNotManualChild(t *testing.T) {
+	data, err := fs.ReadFile(Files, "plugin/skills/new-ticket/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(data)), " ")
+	for _, bad := range []string{"is never yours to write before", "tix sync` writes a synced ticket's note at", "never write the note yourself"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("new-ticket: stale %q", bad)
+		}
+	}
+	for _, s := range []string{"never a manual child, which `tix ticket stub` refuses", "filed at a synced source",
+		"don't add a follow-up \"add to `covers`\" line", "Under a manual lead, a manual child"} {
+		if !strings.Contains(text, s) {
+			t.Errorf("new-ticket: missing %q", s)
+		}
+	}
+}
+
+func TestSkillsMakeSpecCopiesWithSpecStartSnapshot(t *testing.T) {
+	read := func(p string) string {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(data)), " ")
+	}
+	for _, c := range []struct{ file, want string }{
+		{"plugin/skills/spec/SKILL.md", "`tix spec start <ID> <slug> [<capability>…]`, never by hand"},
+		{"plugin/skills/work-ticket/specs.md", "`tix spec start <ID> <slug> [<capability>…]`"},
+		{"plugin/skills/work-ticket/specs.md", "never copy by hand"},
+		{"plugin/skills/spec-init/SKILL.md", "make it first with `tix spec start <ID> <slug>`"},
+		{"plugin/skills/save/SKILL.md", "it checks against the snapshot `tix spec start` took"},
+		{"plugin/skills/save/SKILL.md", "names the `tix spec start <ID> <slug>` to run"},
+		{"plugin/skills/save/SKILL.md", "against the snapshot `tix spec start` took"},
+	} {
+		if !strings.Contains(read(c.file), c.want) {
+			t.Errorf("%s: missing %q", c.file, c.want)
+		}
+	}
+	if save := read("plugin/skills/save/SKILL.md"); strings.Contains(save, "snapshots the base") || strings.Contains(save, "baseline step 4 recorded") {
+		t.Error("save: still says promote takes the base snapshot")
+	}
+}

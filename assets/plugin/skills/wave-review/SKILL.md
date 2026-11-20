@@ -1,0 +1,94 @@
+---
+name: wave-review
+description: Diff-scoped, capped wave review of one repo for a ticket (architect and senior developer in one pass), written to tickets/<source>/<ID>/reviews/wave-N-<slug>.md. Use when you are spawned as tix:reviewer or tix:reviewer-deep after a wave's tasks are merged.
+---
+
+# Wave review (one repo, one wave)
+
+Read-only: no code edits, no commits, no branch changes. The lead's prompt (the PO session
+spawns you with it) passes: the ticket, wave
+`N`, the repo slug and its ticket worktree, the range `<last-reviewed>..<head>`, the previous
+fix-task IDs, the previous review file (if any), the `conventions.md` sections with the test DB and tool env (SDKs, caches) the checks need, and a ≤5-line impact note. With specs it adds the capability and its requirement IDs: read `tix spec diff <ID>` and check that every `proposed` requirement of that capability is implemented and a test cites it, and that the code doesn't contradict an `implemented` one; a miss is a finding. List the IDs that pass in your summary (the PO flips them to `implemented`; you never write specs).
+
+A cross-family review (a kiro model, run by the review broker) writes the file its prompt
+names and numbers its findings from the base its prompt gives (101, 201…).
+
+## Scope it before reading anything
+1. `git -C <worktree> log --oneline --merges <range>`: the wave's merges.
+2. `git -C <worktree> diff --stat <range>`: only these files are in scope.
+3. Vault decisions the diff touches: `tix vault search "<topic>" --project <slug> --budget 1500`.
+   Previous findings: read the previous review's `## Dispositions`; any ID whose line says `open` or `fixing`
+   is still open (`rg -n '^- \[.\] W[0-9]+-.* · (open|fixing)' <prev review>`). Check
+   those against the fix tasks the lead named. Don't re-review unchanged code.
+   **Origin per finding:** tag each one `new`, `pre-existing` (`git blame` puts its lines before the
+   range) or `regression of <earlier ID>` (lines from the last fix range that reopen or contradict an
+   earlier finding), so the lead can spot fix loops. Judge by behaviour, not only by line age: a
+   finding in code from the last fix range that breaks behaviour an earlier finding or a recorded
+   user decision secured is `regression of <earlier ID>` even when its lines are new. Name the
+   earlier ID and what it secured. Tag `new` only when no earlier finding or decision covered
+   that behaviour.
+3b. Vault-only IDs (contract `commit-rules-v1`): `tix ws diff-check -C <worktree> --ticket <ID> <range>`
+   flags the ticket's own IDs (its key, the relay's `R-nn`, the backlog's `B-nn`, finding IDs) in added
+   lines and commit messages; a `vault-id` line is a must-fix, except a hit on a line kept from the base or in a fixture
+   that models a ticket: note it, don't must-fix it. Keep a pattern scan for task and wave
+   wording only: `git -C <worktree> diff <range> | rg '^\+' | rg 'task [0-9]+|wave [0-9]|\bw[0-9]\b'`
+   (fixtures modelling tickets excepted). A hit is a must-fix.
+3c. Standards: load `tix:principles` and `tix:practices` (Skill tool); read the `principles:` of the
+   wave's task files and the practices file of each language in the diff, plus the repo's
+   `projects/<slug>/<slug>-practices.md` in the vault if it exists.
+4. Read by hunk (`git diff <range> -- <file>`); open full files only where a hunk needs
+   context. Find callers with Grep, scoped to `<worktree>` (the workspace holds `tasks/`
+   copies too). Read the repo's `AGENTS.md` by section (`rg -n '^## '`), not whole.
+
+## What to look for (both hats)
+- **Architect:** boundaries and dependency direction, the ticket's contracts
+  (`tickets/<source>/<ID>/contracts/`, ticket-private shapes only; shared interfaces are the spec's `## Interfaces`) kept exactly, the repo's conventions in its `AGENTS.md` and the
+  ticket's `tickets/<source>/<ID>/conventions.md` if it exists (by section), and
+  whether the next planned tasks (the board's `planned` rows) fit without rework.
+- **Senior:** correctness, error handling, races and resource leaks, input limits, injection
+  and authz, cross-platform and compatibility issues, test gaps on the changed behaviour.
+- **Shape:** the task's principles and the core set of `tix:principles` (subtract before you add,
+  minimize reader load, boundary discipline, test behaviour not implementation) and the language
+  practices; name the principle or rule a finding rests on. Comments: every added comment,
+  trailing ones included (`diff-check` counts only whole-line ones), that isn't a kind
+  `tix:practices` keeps is a should-fix, and a surprise it explains asks for the reshape that
+  makes it obvious. Tests that pass when the behaviour breaks, or fail when only internals
+  change, are should-fix.
+**Host-trust checklist (reviewer-deep only; ≤5 lines of findings):** for code that reads, copies or runs worktree files outside the session sandbox, check:
+- symlinks, and symlinked or linked parent directories, followed or copied;
+- special files (FIFOs, devices, sockets) opened or read;
+- path escapes (`..`, absolute paths, case or Unicode aliases) out of the intended root;
+- TOCTOU between a check and the use of the same path;
+- running built code (scripts, hooks, build outputs) from an untrusted tree.
+For files that hold secrets, don't collect path findings one at a time (leaf symlink, then parent symlink, then a race in the walk): when the code checks paths instead of confining access by design (a directory handle it can't leave: Go `os.Root`, `openat`), say so in one must-fix finding that asks for the confinement, in a contract review as much as in a wave review. A helper that redacts or sanitises and passes unknown input through unchanged is a must-fix: it fails closed.
+Run cheap checks (the repo's vet or lint), export the DB env from `conventions.md ## Test DB` if it has one and the tool env your prompt names (SDK paths, caches such as `PUB_CACHE`, `PATH` additions; install dependencies as the repo's `AGENTS.md` says if they are missing), then run the **focused tests of the changed packages, DB suites included,** within a
+**5-minute cap**: `timeout 300 <the repo's test command scoped to those packages>` (e.g. `timeout 300 go test -p 4
+./pkg/a/...`); a timeout or a failure you can't reproduce is a finding, never a hang; name an overrun. Run checks in the foreground; never end your turn while a background shell of yours runs (you'd wake up after your review). A check you can't run for a missing tool or env is said in the summary (with the command and error), never silently skipped. When the ticket has a `## Test DB` or a wave task is `db: heavy`, any skipped DB test is a must-fix (M) finding; without either, skipped DB tests are no finding. Mark each finding
+`confirmed` (a test fails or you reproduced it) or `unconfirmed` (reading only).
+**A must-fix needs a run that proves it** (`interrogate`, pstack): a failing test or a repro script
+in your scratch directory (never the worktree, never committed) that shows the wrong behaviour;
+the finding quotes the command and the output it printed. A suspicion you can't confirm is a
+should-fix with a "how to confirm" step, never a must-fix; only `tix:reviewer-deep`'s host-trust
+findings may stay must-fix `unconfirmed`, with the attack path walked step by step at file:line.
+Count what you dropped for lack of proof, and why, in `## Dropped`.
+
+## Output (hard caps)
+Write `<vault>/tickets/<source>/<ID>/reviews/wave-<N>-<slug>.md`: the vault's frontmatter plus
+`type: review`, `wave`, `repo` (slug), `range`, `model`; link `[[<ID>]]` and the wave's task
+files. Then:
+- summary ≤5 lines;
+- at most **3 must-fix, 6 should-fix, 5 consider**, each ≤6 lines:
+  `W<N>-<repo>-<M|S|C><nn> · file:line · problem · fix · test to add · confirmed|unconfirmed`
+  (`<repo>` is the slug's repo part, e.g. `W2-billing-service-M01`);
+- "keep as pattern" ≤5 bullets;
+- `## Dropped`: one line, the suspicions no run confirmed and why;
+- previous findings: one line listing resolved and still-open IDs;
+- `## Dispositions` (last section): one line `- [ ] <ID> · open` for every finding ID you wrote
+  in must-fix, should-fix and consider (the ID exactly as in the finding). The lead replaces
+  the box and word (`[x] resolved`, `[-] kept`, `[x] deferred`, `[/] fixing`); you never do, and you never file tickets.
+Must-fix means data loss, security, a broken contract, a bug a user would hit, or a blocker for
+the next wave, confirmed by a run.
+Everything else is should-fix or consider. Findings are plain bullets; only the Dispositions lines are checklist lines.
+
+Reply in ≤15 lines: the counts, the must-fix one-liners, the file path. The reply goes to
+your spawner, the PO, which tells the lead; the lead reads the review file.

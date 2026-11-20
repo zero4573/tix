@@ -1,0 +1,86 @@
+---
+name: recall
+description: Recall where a project or ticket stands from the Obsidian vault (latest session logs, decision index, groups and dependencies, ticket task list) and summarize what's done and what's left. Use when the user runs /tix:recall [project|ticket], or asks to pick up where things left off. (Named recall so it doesn't shadow Claude Code's built-in /resume, which reopens conversations.)
+---
+
+# /tix:recall [project | ticket-key]
+
+Read-only. Never write to the vault.
+
+## Find the vault and the subject
+
+- **Ticket workspace** (the cwd or a folder above it has a `workspace.json`
+  whose `id` is the ticket ID; `~/Projects/work-<vault>/<ID>` by default): `CLAUDE.md` names
+  the vault and the ticket.
+- **A `spec` session** (`<workRoot>/.spec-<vault>`):
+  `CLAUDE.md` names the vault.
+- **Otherwise:** the knowledge-base vault named in the system prompt
+  (`tix claude`). Failing that, the vaults are the folders under
+  `$OBSIDIAN_ROOT` (`~/Documents/Obsidian`) that contain `.obsidian/` (recall only reads);
+  if there are several, ask which one with AskUserQuestion.
+- **Subject:** the argument if given: a ticket ID like `PROJ-12` or
+  `MAN-3`, or a project slug (`bitbucket-acme-billing-service`, a
+  folder under `projects/`; a bare repo name is matched against the
+  project notes' `aliases`, asking if several match). Otherwise the
+  workspace's ticket, else the cwd repo's slug as the system prompt names
+  it (`<provider>-<owner>-<repo>`, from its path under `~/Projects`). Also
+  mention any drafts waiting in `inbox/` for that project, and open tasks
+  in `inbox/` follow-up notes (`type: follow-ups`) that link its tickets (`inbox.md` lists them).
+
+## Project
+
+0. `tix vault search "<what's open, decided, in progress>" --project <project>
+   --budget 1000` to find what matters before reading (a bigger budget only
+   adds tokens: recall reads the logs and notes below anyway); then
+   `tix vault note get <note> "<section>"` rather than whole notes.
+1. The 3 most recent notes in `projects/<project>/logs/`, newest first by
+   filename date.
+2. `projects/<project>/architecture/<project>-decisions.md`, plus the decision notes
+   it links that the logs mention.
+3. The project's index note `projects/<project>/<project>.md`, if it
+   exists, and open tickets that list the project in `projects:`
+   (`tickets/*/*/*.md` with `status` other than `closed` or `done`).
+   Then `tix vault groups <vault> <project>` (read-only) for its groups,
+   `depends-on` and used-by.
+4. For each group it belongs to, the latest lines of
+   `projects/<group>/architecture/<group>-decisions.md`.
+
+## Ticket
+
+0. `tix vault search "<open tasks, status, blockers>" --path tickets/<source>/<ID>/
+   --type board --budget 1000` (the board holds the task state), then
+   `tix vault note get <note> "<section>"` rather than whole notes.
+1. The ticket note: its content (the source block, or a manual ticket's
+   description sections), `## Workspace`, `## Tasks`, `## Questions`,
+   `## Follow-ups`, `## Review`, and the summaries at the end. Also its
+   dependency fields (`blocked-by`, `blocked`, `parent`).
+2. The 3 most recent `tickets/<source>/<ID>/logs/` notes; the `board.md` task lines still open
+   and the last 5 merged, with the merged and dropped counts (by word, any box:
+   `rg -n '^- \[.\] [0-9]+ · ' board.md | rg -v '^[0-9]+:- \[.\] [0-9]+ · (merged|dropped) '; rg '^- \[.\] [0-9]+ · merged ' board.md | tail -n 5; echo "merged $(rg -c '^- \[.\] [0-9]+ · merged ' board.md || echo 0), dropped $(rg -c '^- \[.\] [0-9]+ · dropped ' board.md || echo 0)"`;
+   the ticket's live task views are in `<ID>-status.md`), `tail -n 25 backlog.md`, and the open must-fixes
+   (by word: `rg -n '^- \[.\] W[0-9]+-[a-z0-9-]+-M[0-9]+ · (open|fixing)' reviews/`, their `[ ]`/`[/]` Dispositions lines; a review
+   without `## Dispositions` predates the rule: check its must-fixes against
+   the board);
+   `pr-feedback.md` if any (threads `needs you`, replies not posted yet).
+   An old-format ticket has other files instead; skim their open questions.
+3. **Leads and covered tickets:**
+   - A lead (`ticket-type: epic`): each ticket in its `covers` list, briefly
+     (status, its group in `## Tasks`), and the open `## Follow-ups` on
+     children that aren't the user's.
+   - A covered ticket (`covered-by: "[[<LEAD>]]"`): it's worked in the
+     lead's workspace, so recall the lead too, and say that
+     `tix start <LEAD>` is where to pick it up.
+4. For each repo in `## Workspace`, steps 1, 2 and 4 of **Project**.
+5. In a workspace, `tix ws ls <ID>` (branches, uncommitted changes).
+
+## Summarize
+
+Keep it short and concrete:
+- **State:** where things stand (ticket status, last session's outcome).
+- **Done:** recent work, with wikilinks.
+- **Decisions in force:** the ones that constrain what comes next.
+- **Works with:** the projects it depends on, those that depend on it,
+  and its groups (omit for a standalone project).
+- **Open:** unanswered questions, unmerged board rows and open must-fixes,
+  open follow-ups (who to chase), PR threads waiting on the user.
+- **Next:** the next 1 to 3 concrete steps.

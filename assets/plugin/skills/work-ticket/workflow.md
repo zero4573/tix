@@ -1,0 +1,179 @@
+# Ticket workflow (shared by the PO, the lead and the agents)
+
+The one place that says how a ticket moves from kickoff to review, how tickets depend on one
+another and what each status means. The vault's `AGENTS.md` only points here. The PO
+(`SKILL.md`), the lead (`lead/SKILL.md`) and `task-agent` hold their own playbooks.
+
+## Workflow
+The ticket session (`/tix:work-ticket`) is the **PO**, the one the user talks to: it runs
+the kickoff, relays, and spawns every agent (subagents can't). One **lead** (`tix:lead`, a
+background agent; never two at once) plans, merges and triages, and asks the PO for agents and
+for the user's answers. New requirements, feedback and questions go to the PO at any time: work
+becomes a `relay.md` entry the lead plans into the next wave; a question that needs no lead goes
+to `tix:analyst` (read-only, ≤20-line answers). State lives in the bounded files of
+`tickets/<source>/<ID>/`, so a new session (`tix start <ID>`, a new conversation by default) resumes in a
+few calls; `tix start --continue <ID>` reopens the last one.
+1. **Kickoff:** the user picks the repos (local main clones, or Bitbucket repos cloned with
+   `tix ws clone`), the base branch and target version of each. Then the PO **clarifies** with the user
+   (`tix:clarify`): rounds of questions with recommended answers, one round for a clear
+   chore, several for a vague feature; facts are looked up, never asked; "skip" ends it.
+   `/tix:clarify` does the same for new scope later.
+2. **Plan and design:** `plan.md` (≤150 lines; acceptance rows with pass predicates); for a change across function boundaries `design.md` (`tix:design`: two shapes, an arena of `tix:designer` agents when expensive to reverse, prototype tasks for experiment-shaped questions) and the design review gate, re-opened when scope creeps; each wave 2-6 task files with exact `owns`. `ticket-type`
+   shapes it: a `bug` is diagnosed first (`tix:diagnose`: a feedback loop, `## Root cause`,
+   a regression test), an `investigation` gets an `investigation.md` (code only if asked), a
+   `chore` one task, an `epic` one plan over `covers`.
+3. **Contracts first:** API, schema, file-format or CLI-flag changes go into
+   `contracts/<name>-v<N>.md` before a task using them starts. Rules binding on every task that
+   aren't the repo's own (local stack, test data, env a check needs) go into `conventions.md`.
+4. **Waves:** ≤4 task agents at once, each in a worktree `<workRoot>/<ID>/tasks/<slug>-NN`
+   (branch `task/<ID>-NN-<slug>`), none sharing `owns` (nor a test database, port or container).
+   The lead merges each `--no-ff` and runs the repo's checks. Past ~40 task lines, the lead moves
+   the finished lines of older reviewed waves to `board-archive.md`.
+5. **Review:** one reviewer per repo and wave (and a `tix:comment-sicko` for code waves) (≤3 must-fix, ≤6 should-fix, ≤5 consider).
+   Must-fixes become fix tasks before the next wave; the rest go to fix tasks or `backlog.md`
+   (≤40 open, triaged each wave). No finding stays open: each gets a line in the review's
+   `## Dispositions` (`resolved` with a fix or `kept: <reason>`, or `deferred` to a ticket), and
+   hand-over waits until none is `open`.
+6. **Verify, then hand over:** a `tix:verifier` that wrote none of the code runs every acceptance row on its surface, proves the change's safety fact and flags weak evidence (`verification.md`); then a `tix:summarizer` writes the work summary (`summary/`: features, real usage, screenshots, a walkthrough video or GIF); FAIL rows become fix tasks. Then the hand-over: a short retro (fixes to the agents' environment become backlog items;
+   `/tix:retro` runs one any time); the lead decides the open backlog items (A, this
+   ticket; B, a new ticket; C, an existing ticket (name it); D, leave it in the backlog
+   (backlog items only)) and files manual follow-up tickets itself; the user only picks which
+   also go to the ticket's source; then `## Review` and status `review`.
+7. **Ship** (`autopilot: stack`, the default; `board.md`): the PO runs `tix:ship`: tidy, sign, `/tix:save`, one pull request per repo, then conflicts, review threads (`tix:pr-feedback`, replies posted) and CI with a fresh `tix:verifier` at each new head, until only the user's approval and merge are left. It never merges; `autopilot: off` leaves all of it to the user.
+
+**relay.md:** `## Closed` (≤40 one-line summaries), then `## Open` (≤30 entries, appended),
+trimmed by the PO; one line each, `R-nn · <date> · <from>→<to> · <type> · <text> ·
+<open|planned|answered|copied>` (`copied`: in `plan.md ## Decisions`). `board.md`'s `lead:` and
+`po:` (session id, running agents with their wave, finished notices not yet sent, pushed heads
+whose CI it follows) are the PO's; the PO wakes the lead once per wave, when no agent of it is left (a
+blocked or failed task at once). When `po: session:` isn't the current session, its agents are
+gone: their `running` rows become `orphaned` and a fresh lead picks them up. The lead rotates
+after each reviewed wave. The PO's context compacts by itself (Claude Code's auto-compact): the
+PO writes every change of its state to board and relay as it happens, so a compaction at any
+point loses nothing, and the lead and workers keep running through it.
+
+**Agents:** `tix:task`, `tix:mechanical`, `tix:analyst`, `tix:comment-sicko`, `tix:verifier`, `tix:summarizer`
+(sonnet), `tix:reviewer` (opus), `tix:reviewer-deep` (fable, for contract or security waves, plus the same review on kiro models of other families through `tix review kiro` when the sandbox has its review broker), `tix:designer` (opus; an arena's seats take fable, opus and sonnet), `tix:lead` (the
+session's model, no Agent tool); the lead may set a task's `model:` (haiku, opus, fable) or `effort:` per
+spawn (lead skill, "Model per task"). None has subagent or Atlassian tools. Search: Glob and Grep for files and
+content. Older tickets may
+hold other files: plain notes. The PO asks the user (status `blocked`, desktop notification) on
+open questions or major tradeoffs, and at `review` with the work committed on the
+ticket branches. The lead signs and pushes them after every wave, so CI scans each one and
+the PO sends its failures back to the lead; `/tix:save` pushes what is left (signed commits
+only, forced only with a lease after a tidy). Manual and synced tickets work the same way.
+
+## Dependencies and lead tickets
+Frontmatter, as wikilinks by ticket ID (`"[[PROJ-12]]"`). `tix sync` fills these for synced
+tickets; on manual tickets the user sets them.
+- `parent`; `children` (an epic's children, **whoever they're assigned to**); `blocked-by`,
+  `blocks`, `related`; `blocked: true` while any `blocked-by` ticket isn't done.
+- **Lead tickets:** an epic (`ticket-type: epic`) is worked as one lead ticket. `covers` lists
+  the tickets its workspace does: the epic's open children assigned to the user. Each of those
+  has `covered-by: "[[<EPIC>]]"`, and `tix start` sends the user to the lead (`--force` starts
+  one on its own). `tix sync` also pulls in the parent epic of any ticket of the user's (tag
+  `parent-epic`), even when the epic isn't assigned to them. To group manual tickets, set
+  `ticket-type: epic` and `covers` on one, and `covered-by` on the others.
+- **Follow-ups:** at kickoff, the PO checks every open blocker, and every epic child that isn't
+  the user's (`kickoff.md`, 3.0). It lists the ones to chase under `## Follow-ups` as
+  `#follow-up` tasks (who, which ticket, what's needed; the ticket's `<ID>-status.md` and
+  `inbox.md` list them), offers a questionnaire for the person
+  (`<ID>-questionnaire-<slug>.md`, linked from the task), and asks whether to wait, build on the
+  blocker's branch, or go ahead. `/tix:save` writes the results into each covered ticket too.
+
+## Status lifecycle
+`new` → `triage` → `in-progress` ⇄ `blocked` (waiting on the user) → `review` (ready for the
+user's review) → `done` (after `/tix:save`). It becomes `closed` when the source closes the
+ticket (set by sync) or, for a manual ticket, when the user sets it. `status: blocked` always
+means waiting on the user; a ticket waiting on another ticket keeps its status, and the
+`blocked: true` field says so. Once closed, saved and pushed, `tix clean` takes it out of
+`tickets/` (to `.trash/` for a synced ticket, `archive/tickets/` for a manual one).
+`/tix:save` sets `saved: <timestamp>` on the ticket so `tix clean` knows its work is in the
+vault, and leaves a `closed` status as it is.
+
+**Ignoring a ticket:** `ignore: true` in its frontmatter, optionally with
+`ignore-until: yyyy-MM-dd` and `ignore-reason: ...`. It is still synced, but `tix start` skips it
+(unless `--force`) and the dashboard lists it under "Ignored". The user clears the flag by hand
+once `ignore-until` has passed.
+
+## The `po:` block
+Board.md frontmatter, the PO's:
+```
+lead: <agentId|none>
+lead-since: <yyyy-MM-dd HH:mm>
+po:
+  session: <$CLAUDE_CODE_SESSION_ID when the lead was spawned>
+  agents:
+    - "<agentId> · <agent> · w<N>|- · task NN|review <repo>|design <role>|verify|summary|analyst · <since>"
+  finished:
+    - "w<N> · task NN · done|partial"
+  held: [R-nn]
+  ci:
+    - "<slug> · <branch> · <sha> · <yyyy-MM-dd HH:mm>"
+```
+`agents`: the running ones (`w<N>` from the `Spawn:` entry's `wave:`, `-` for an analyst, a designer, the verifier or the summarizer);
+`finished`: notices not yet sent to the lead (they survive `/compact`); `[]` when none; `held`: non-urgent
+user entries kept from the lead until the wave line (`[]` when none); `ci`: pushed heads whose
+pipeline hasn't finished (the lead's `Pushed:`; `[]` when none).
+
+## CI of pushed heads
+Each `po: ci:` entry (`"<slug> · <branch> · <sha> · <pushed at>"`, from the lead's `Pushed:`),
+checked at every event through the ticket source's `atlassian` MCP server (as `tix:ship` says):
+`listBitbucketRepoPipelines` (`targetBranch: <branch>`, `sort: -created_on`), the run whose
+`target.commit.hash` is the sha.
+- Successful, superseded by a newer push of that repo, or no run an hour after the push (the
+  repo builds no branch pipelines): drop it. Running: keep it.
+- Failed: read the failing step's log (`getBitbucketRepoPipelineStepLog`, filtered to the error),
+  save an excerpt to `tickets/<source>/<ID>/ci/<date>-<slug>.md`, drop the entry, and
+  `tix relay add <ID> --from po --to lead --kind request "CI failed in <step> at <slug>@<sha>: see
+  ci/<file>"`, held for the next wave line like user input (at once when no task runs; no lead:
+  spawn one). The lead fixes it first in its next wave, whose push brings a new entry.
+- A flake (the log shows infrastructure: a runner, network or registry error) is no request:
+  tell the user once to rerun it (sessions can't run pipelines), keep the entry.
+
+## A ticket that changes the plugin's own formats
+A ticket whose work changes the formats of `board.md`, `relay.md`, task files or reviews (this plugin's
+own protocol) keeps its **own** board, relay, tasks and reviews in the format of the plugin version
+that is running it, never the new one it is writing: the gates and recipes in the skills (the status
+sed, the Dispositions check) must keep reading them until the ticket is saved. The new format applies
+from the next ticket.
+
+## Trimming relay.md
+Whenever the PO writes it and a cap is exceeded, trim: move `copied`, `answered` and `planned`
+entries whose board line (note `R-nn`) is merged, or that have no line, to `## Closed`, oldest
+first, until `## Open` is ≤30; drop the oldest Closed lines. If more than 30 are still truly
+open, batch new user input into one entry per theme instead of one per message. The durable
+record is `plan.md ## Decisions`, `## Questions` and `board.md`.
+
+## The gate
+1. The lead has written `R-nn · … · lead→user · question · … · open` to `relay.md`, set
+   `status: blocked`, and ended with `Ask user:` (options, recommendation, tradeoffs).
+2. Append the questions under `## Questions` in the ticket note:
+   `- **yyyy-MM-dd** (lead) <question>`, with options and the recommendation.
+3. Ask with **AskUserQuestion**, all pending questions in one batch, recommended option first,
+   tradeoffs in the option descriptions. This shows the ticket as `needs-input` in `tix status`.
+4. Record each answer under its question (`  - **Answer:** ...`), set the question's entry to
+   `answered`, append `R-mm · <date> · user→lead · answer · R-nn: <answer> · open`, and
+   SendMessage the lead "R-nn answered (R-mm)". The lead records the decision in `plan.md` and
+   sets `status: in-progress`.
+
+## Follow-ups
+The lead decides each item it won't fix in this ticket (a deferral candidate at triage, an open backlog item at hand-over) with no question (`never-block-on-the-human`): A, this ticket; B, a new ticket; C, an existing ticket (name it); D, leave it in the backlog (backlog items only). It files a B as a manual ticket (`tix new`) or adds a C to that note itself, and lists every choice in `## Review`; the user reverses any later. Two exceptions go through the gate: deferring a must-fix, and filing at the ticket's source (e.g. Jira), which other people see: at hand-over the lead asks once which new tickets to also file there, and you file the chosen ones with `/tix:new-ticket`. Never fix tasks or `kept:` lines: those are the lead's alone.
+
+## relay.md format
+One line per entry: `R-nn · <date> · <from>→<to> · <request|feature|feedback|question|answer|decision> · <text ≤200 chars> · <open|planned|answered|copied>`.
+Add entries with `tix relay add` (it takes the next free id under a lock) and set states with `tix relay state`; never edit by hand. Caps: `## Open` holds **≤30** entries, `## Closed` **≤40**,
+about 100 lines; the lead marks `decision` and `answer` entries `copied`.
+
+## Orphaned tasks
+After a new session, mark the old one's `running` lines `orphaned`, then check none is left:
+per running task `tix board set <ID> NN orphaned --from running` (locked: it never overwrites a line the lead just set; exit 3 means the line is no longer `running`), or for all at once, with an older `tix`:
+`sed -i -E 's/^- \[.\] ([0-9]+) · running · /- [\/] \1 · orphaned · /' board.md; rg -q '^- \[.\] [0-9]+ · running · ' board.md && echo "running lines left"`
+
+## Vault write rules
+- Never touch the note's identity and source fields (`source`, `source-*`), `ignore*` fields, a
+  synced ticket's `<!-- source:start -->` block or a covered ticket's content; a manual ticket's
+  content sections only to record a user decision (cite its R-nn) or tick met criteria.
+- Follow the vault's `AGENTS.md` (frontmatter, kebab-case, wikilinks by bare note name). Checkboxes
+  only where `vault-checklists-v1` puts them (`board.md ## Tasks`, `## Dispositions`, `backlog.md`,
+  the note's `## Tasks`/`## Follow-ups`); relay, plan, task files and `## Reviews`: plain bullets.

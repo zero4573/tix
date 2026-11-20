@@ -1,0 +1,422 @@
+---
+name: save
+description: End-of-session save to the Obsidian vault. In a ticket workspace (~/work/<ID>), writes session logs, promotes the ticket's kb-drafts into projects/ (repos and groups), knowledge-base/ and references/ without breaking links, records dependencies between projects, tags the ticket with <project>-<target-version>, appends the ticket summary (this replaces the old /summarize), then pushes each workspace repo's feature branch (signed commits only, forced only with a lease after a tidy). In a repo session started with tix claude, or a spec session, writes a session log and promotes the session's inbox/ drafts. Use when the user runs /tix:save or asks to save, document or summarize the session.
+---
+
+# /tix:save
+
+The user runs this at the end of a session, after reviewing the changes.
+This is the only time shared vault notes are written, and the only time
+the ticket branches are pushed. Things can change a
+lot mid-session, so write what is true **now**.
+
+Follow the vault's `AGENTS.md`: frontmatter on every note, kebab-case
+filenames and tags, wikilinks by **bare note name** only, at least 2
+wikilinks per note, templates from `templates/`, one concept per note,
+never delete notes without asking.
+
+## Which mode
+
+- **Ticket mode:** the cwd, or a folder above it, is a ticket workspace:
+  its `workspace.json` has the ticket ID as `id`
+  (`~/Projects/work-<vault>/<ID>` by default;
+  the vault's `.workflow.json` can move it). Its `CLAUDE.md` names the
+  vault and the ticket. Follow all the steps below.
+- **Spec session:** the cwd is a `spec` workspace
+  (`<workRoot>/.spec-<vault>`). Its `CLAUDE.md`
+  names the vault and the session id (`spec-<vault>-<stamp>`). There's no
+  project:
+  - take the lock (step 2) with the session id as the owner;
+  - write a session log in the vault's `logs/`, as
+    `yyyy-MM-dd-spec-<topic>.md`: the questions asked, the answers in short,
+    and what's still unknown;
+  - promote this session's `inbox/` drafts (step 4, with its dependency
+    and group rules);
+  - release the lock (step 7).
+- **Project mode:** anything else, e.g. `tix claude` in a repo. The vault
+  is the knowledge base named in the system prompt. If there's none, the
+  session wasn't started with `tix claude`: say so (relaunch with
+  `tix claude`, or use `tix spec`) and stop. The project is
+  the repo's slug, `<provider>-<owner>-<repo>`, as the system prompt names
+  it (or from its path under `~/Projects`, or its origin URL). Then:
+  - take the lock (step 2) with `repo-<slug>` as the owner;
+  - write the project log,
+    `projects/<slug>/logs/yyyy-MM-dd-<slug>-<short-description>.md`
+    (template `templates/session-log.md`), plus `projects/<slug>/<slug>.md`
+    from `templates/project.md` if the project is new;
+  - step 4 for this session's `inbox/` drafts and anything else worth
+    keeping from the session (changes made, how things work, decisions);
+    the dependency and group rules of step 4 apply to them too;
+  - release the lock (step 7).
+
+  **Inbox drafts** are the notes the `spec` skill wrote in `inbox/` with
+  `session:` set to this session. Promote them exactly like a ticket's
+  `kb-drafts/` (same `target:` and `update-of:` rules, `tix vault links move`).
+  Drafts from other sessions stay where they are: mention them, so the user
+  can `/tix:save` them from a `spec` session. Notes with `type: follow-ups`
+  (task lists that unattended commands such as tix sync leave for the
+  user) aren't drafts: never promote, move or edit them.
+
+## Ticket mode
+
+### 1. Gather (read-only)
+
+- `CLAUDE.md` and `workspace.json`: repos, base branches, target versions,
+  branches.
+- The ticket note (`## Tasks`, `## Questions` answers, `## Follow-ups`,
+  `## Review`), then by section, not whole: `plan.md` (scope, decisions,
+  `## Relationships`), the `board.md` rows (`rg -n '^\|'`), the `## Summary`
+  section (≤5 lines) of each `reviews/*.md`, `backlog.md ## Open`,
+  `investigation.md`, `pr-feedback.md` if `/tix:pr-feedback` ran, and
+  `kb-drafts/`. An old-format ticket has other files instead; read those.
+- For a lead ticket, the notes of the tickets in its `covers` list.
+- `tix ws diff <ID> --stat`, plus the full diff where needed, to see
+  what actually changed. Prefer it over the ticket files when they
+  disagree: the code is what ships.
+- `tix vault groups <vault> <slug>...` for the ticket's repos: their
+  `depends-on`, used-by and groups, and so which group notes step 4 may
+  touch. A repo without a project note yet shows as
+  `<slug>: no note (standalone)`.
+- Any repo whose `targetVersion` is null: ask the user for it with
+  AskUserQuestion. When AskUserQuestion isn't available (`tix clean --save`
+  runs this skill headless), stop without saving anything and say which
+  repo has no target version: the user saves this ticket by hand.
+
+### 2. Take the vault lock
+
+```sh
+tix vault lock acquire <vault> <ID>
+```
+
+The owner is the ticket ID (outside tickets, see **Which mode**). It waits
+if another session is saving. Release it in step 7, **including when
+something fails**: run `tix vault lock release <vault> <ID>` before you stop.
+Re-read each shared note right before editing it.
+
+### 3. Session logs
+
+`/tix:save` can run several times during a ticket, so every write below is
+repeat-safe: look for what an earlier save wrote and update it in place.
+One log per session: the log carries `session: <session id>` in its frontmatter
+(the ticket's session, or `$CLAUDE_SESSION_ID`/the transcript name when set; else the date and
+time, `date +%FT%H%M%S`, never the bare date: two sessions on one day must not share a log key).
+Before creating a log, `rg -l '^session: <id>$'` the folder; when one exists,
+update that file (new date in `updated:`, the text rewritten to what is true now)
+instead of creating another.
+
+- `tickets/<source>/<ID>/logs/yyyy-MM-dd-<ID>-<short-description>.md` (template
+  `templates/session-log.md`): what was done, decisions made (linked),
+  pending items, notes created or modified (linked).
+- For each repo **with changes**, `projects/<slug>/logs/yyyy-MM-dd-<ID>-<slug>-<short-description>.md`:
+  a short log of what changed in that repo and why, linking the ticket and
+  the feature index, group sequence and decision notes.
+
+### 4. Promote knowledge
+
+For each `kb-drafts/` note, use its `target:` frontmatter (default: infer
+from its type):
+
+- **New note** (no note with that name exists; first
+  `tix vault search "<topic>" --project <slug>` for one on the same subject, and
+  update that instead of duplicating it): move it with
+  `tix vault links move <vault> tickets/<source>/<ID>/kb-drafts/<note>.md <target-folder>/`.
+  Never move notes with mv, because `tix vault links` keeps links working.
+  After moving, remove the `target:` field and set
+  `status: active`, `updated: <today>`.
+- **Update to an existing note** (a frontmatter `update-of: <note>`, or the
+  same subject as one): edit the existing note to include the new facts
+  (`tix vault note append|set-section <note> "<section>" --save`, not a whole-file rewrite).
+  Keep its history: a feature note gets a new row in its versions table, it
+  doesn't lose the old one. Then mark the draft `status: merged`, linking
+  the note it went into. Don't delete drafts.
+
+Where things go:
+- `projects/<slug>/`:
+  - `features/`: an index of a feature's tickets, versions per project
+    and links to its spec sections (what it does is the spec's)
+  - `specs/<capability>/spec.md`: only for `specs: vault`; run
+    `tix spec promote <ID> --json` (it checks against the snapshot `tix spec start` took, moves
+    the ticket's copy `tickets/<source>/<ID>/specs/<slug>/` into here atomically and writes a
+    version note; an existing spec there is updated, not duplicated). A copy made by hand has
+    no snapshot: promote fails before writing and names the `tix spec start <ID> <slug>` to run;
+    run it, tell the user another ticket's change promoted before it can't be caught, and promote again. Do it in this step, so step 5
+    checks the moved links. Check the JSON's `error` (or a non-zero exit) first: when it is
+    there the run failed, so act on it (e.g. the `tix spec start` it names), never read the repos as
+    nothing to promote. Per repo the JSON `status` is `promoted`, `nothing` or
+    `refused`. A refusal means another ticket changed the same files in
+    `projects/<slug>/specs/` since this ticket's snapshot: ask the user with
+    AskUserQuestion, **one question per clashing repo**. Say what changed on both sides
+    (`conflict.theirs` and `conflict.ours`, and the tickets in `conflict.others`; when `others` is empty, say `projects/` was edited by hand or by an unknown ticket), what
+    clashes (`conflict.clashes`), and offer three options: keep theirs, keep ours, merge by
+    hand. Keep theirs or ours: re-run `tix spec promote <ID> --resolve <slug>=theirs` (or
+    `ours`; repeat the flag per repo). Merge by hand: tell the
+    user to edit `conflict.copy` (the ticket's copy), and once merged, re-run
+    `tix spec promote <ID> --resolve <slug>=merged`. Without
+    AskUserQuestion (headless), promote nothing for a refused repo and say so
+  - no single-repo `sequences/` or `data/` notes any more (the spec holds
+    them); existing ones stay as they are
+  - `architecture/`: conventions, structure
+  - Create the project's folders and its index note
+    `projects/<slug>/<slug>.md` (template `templates/project.md`, with
+    `repo: <provider>/<owner>/<repo>` and `aliases: [<repo>]` so the short
+    name still finds it) if the project is new. Repos are always named by
+    slug, `<provider>-<owner>-<repo>`, from `workspace.json` or
+    `tix ws repos`.
+- `projects/<slug>/architecture/<slug>-decisions.md`: the project's decision
+  index. Add one line per new decision note:
+  `- yyyy-MM-dd [[decision-note]] (<ID>): one-line summary`. Create it if
+  missing; `/tix:recall` reads it.
+- **Dependencies between projects** (the vault's `AGENTS.md`, "Projects
+  and groups"), from `plan.md ## Relationships` and the diff:
+  - A project that starts needing another (calls its API, consumes its
+    events, reads its database, packages or imports it): add
+    `"[[<other-slug>]]"` to the dependent's `depends-on` and a row to its
+    `## Depends on` table (project, how: interface or contract, since
+    version, flow note). Only projects of this vault go in `depends-on`;
+    outside dependencies go in the table as text.
+  - A changed interface on an existing dependency: update the
+    `## Depends on` row, and the label in the shared group's
+    `## Interactions`.
+  - Remove a dependency only when the ticket removed it.
+  - "Used by" is never written: backlinks and `tix vault groups` show it.
+- **Groups** (`projects/<group>/`, `type: group`): where knowledge shared
+  by several projects goes. Find the repos' groups with
+  `tix vault groups <vault> <slug>...`.
+  - A flow, feature or decision involving two or more projects that share
+    a group: the group's `sequences/`, `features/`, and
+    `architecture/<group>-decisions.md` (same line format as the project
+    index).
+  - The same with exactly two projects and no shared group: the dependent
+    project's folder, linking the other. A pair never needs a group.
+  - The same with three or more projects and no shared group (or projects
+    in different groups): **ask the user** with AskUserQuestion. Offer:
+    create a group (propose a name and the members), add the projects to
+    an existing group, or file it under the main dependent project.
+  - Create a group only with the user's answer, or a kb-draft
+    (`target: projects/<group>`) the user approved. Its name is kebab-case,
+    unique in the vault, says what the projects do together, and is never
+    a repo slug. Creating it means:
+    1. `projects/<group>/<group>.md` from `templates/group.md`;
+    2. `projects/<group>/architecture/<group>-decisions.md` and
+       `<group>-compatibility.md` (from `templates/base.md`, each linking
+       `[[<group>]]` and `[[AGENTS]]`);
+    3. `"[[<group>]]"` added to each member's `groups`;
+    4. its `## Interactions` mermaid graph filled in.
+  - Keep a group current: `## Interactions` shows every member's
+    `depends-on` edge, labelled with the interface (the members'
+    frontmatter is the source of truth). `<group>-compatibility` gets one
+    row per (feature, project): `| Feature | Project | Min version | Ticket | With older peers |`.
+    Without a shared group, a feature's compatibility goes in the feature
+    note's `## Compatibility`.
+  - Never remove a project from a group, or delete a group, without
+    asking the user.
+- `knowledge-base/<topic>/`: general findings that aren't specific to one
+  project, e.g. how a library behaves or a debugging technique (template
+  `templates/knowledge.md`). Pick or create a fitting topic subfolder.
+- `references/`: reference material on specific behaviour outside any
+  project or ticket, e.g. an external API's quirks or a tool's setup
+  (template `templates/reference.md`).
+
+Every filename must be unique across the whole vault, because links use
+bare names: hence slugs for projects, group names that are never a slug,
+`<slug>-decisions.md` and `<group>-decisions.md`, and log names
+that include the ticket ID and slug. `tix vault links move` refuses a clashing name.
+
+Each promoted note links back to the ticket (`[[<ID>]]`) and to its
+project index note.
+
+### 5. Check links
+
+```sh
+tix vault links check <vault> <every note created, moved or edited> tickets/<source>/<ID>/<ID>.md
+```
+
+Fix every unresolved or ambiguous link (rename a clashing new note,
+qualify nothing by path), then check again until it's clean.
+Links to source tickets that aren't in the vault yet (e.g. a linked issue
+assigned to someone else) can stay unresolved.
+
+Then check the links between projects and groups, for the project and
+group index notes this session created or edited (with names, only those
+notes' problems count):
+
+```sh
+tix vault groups <vault> <every project and group whose index note you wrote> --check
+```
+
+Fix every error it reports (a `groups` link that isn't a group, a
+`depends-on` link that isn't a project, a project depending on itself),
+and run it again until it exits 0. Then run
+`tix vault groups <vault> --check` once for the whole vault: don't fix
+errors in notes this session didn't write, and don't loop on them; list
+them for the user. An empty group is only a warning; mention it to the
+user.
+
+### 6. Update the ticket note
+
+- **Tags:** add `<slug>-<target-version>` for each repo with changes, in
+  kebab-case with the dots as dashes, since Obsidian tags can't contain
+  dots: `bitbucket-sops-orders-service-2-4-0`. Also add the exact versions to
+  the frontmatter list `versions: [bitbucket-sops-orders-service@2.4.0, ...]`.
+- A `## Knowledge` section linking every note created or updated, grouped
+  by project.
+- Write the summary **at the very end of the note**, in exactly this form
+  (time from `date +%FT%T`). It is the block that starts at the
+  `<!-- save-summary -->` marker line: when the marker is there (an earlier
+  save), replace everything from it to the end of the note with the new block,
+  keeping the first `created:`; never append a second block. Without the marker
+  (first save), append it:
+
+  ```
+  <!-- save-summary -->
+  ---
+  created: *yyyy-MM-ddTHH:mm:ss*
+
+  <summary: the problem, the fix or answer, repos and versions, notable
+  decisions (linked), PR feedback handled (from pr-feedback.md), follow-ups>
+  ```
+
+- **A lead ticket** (`ticket-type: epic`) does the same for every ticket in
+  its `covers` list:
+  - the version tags and `versions` for the repos that ticket's part
+    changed;
+  - a `## Knowledge` section with the notes relevant to that ticket;
+  - its own summary block at its end, saying what was done for it and that
+    it was `Worked in [[<LEAD-ID>]]`.
+
+  The lead's own summary lists each covered ticket and any open
+  `## Follow-ups`.
+
+### 6b. The note's `specs:` and `requirements:`
+
+Write them in the ticket note's frontmatter from `tix spec diff <ID>` (the capabilities touched;
+the requirement IDs added or changed). Vault-located specs were promoted in step 4; `tix spec diff <ID>` still shows their change, against the snapshot `tix spec start` took.
+
+### 7. Release the lock and finish
+
+Run `tix vault lock release <vault> <ID>`. Then, in the ticket's frontmatter
+(for a lead, in each covered ticket's too):
+- set `saved: <date +%FT%T>`, adding the field after `status` if it's
+  missing. `tix clean` reads it to know the ticket's work is in the vault;
+- set `status: done` only after the lead's hand-over: `board.md` shows the
+  hand-over done (`Next: handover-done`, the hand-over line in `## Tasks`
+  `[x]`) or the note's `status` is `review`. Before that (a mid-ticket save)
+  keep the status as it is (`in-progress`) and say the ticket is still open.
+  With `board.md`'s `autopilot: stack` (unset counts as `stack`) keep `review`
+  instead: `tix:ship` sets `done` when every pull request is merged, so `tix
+  clean` never removes a workspace whose PRs still take fixes.
+  `closed` (the source, or the user, closed it) always stays. Step 8 pushes
+  the ticket branches.
+
+Before the final status, in a ticket workspace run `tix ws marks <ID>`. On exit 3 ask with
+AskUserQuestion: stop and run `/tix:tidy` first (recommended), or save
+anyway; go on only on the second, and remember that the user chose it (step 8 asks again
+before pushing).
+
+### 8. Push the ticket branches
+
+Last, after everything above (and the lock released). For each repo in
+`workspace.json` (a lead ticket: every repo of the lead's workspace, which
+holds the work of all the tickets it covers), with `<path>` its checkout
+and `<branch>` its feature branch from `workspace.json` (`feature/<ID>…`; a
+manual ticket's: `feature/<description>`):
+
+1. **Only the feature branch.** Never push a task branch (`tasks/*`
+   worktrees, `task/*` branches), another branch, or tags. Skip a repo
+   whose worktree is missing or not on `<branch>`, and say so.
+2. **Mid-ticket.** Pushing before the hand-over (step 7) needs no question:
+   the lead pushes the ticket branches after every wave so CI scans them,
+   and `/tix:tidy` still rewrites pushed commits down to the branch's
+   branching point (then pushed with a lease, 6).
+3. **The marks gate.** `tix ws marks <ID>` exited 0 in step 7. If the user
+   chose to save anyway, ask once more with AskUserQuestion before
+   pushing: push anyway, or don't push (recommended: run `/tix:tidy`
+   first). Push only on a yes.
+4. **Nothing to push:** `git -C <path> rev-list --count <branch> --not --remotes`
+   is 0 and the branch has an upstream: say it's up to date.
+5. **Every commit signed.** `git -C <path> log --format='%h %G? %s' <branch> --not --remotes`:
+   any commit whose `%G?` is `N` (unsigned) or `B` (bad signature) means
+   this repo is **not pushed**. (`E`, signed but not checkable here, e.g.
+   no `gpg.ssh.allowedSignersFile`, counts as signed; `G`, `U`, `X`, `Y`,
+   `R` are signed.) Ticket work is committed unsigned and signed when the
+   lead pushes and after the tidy, so these are the commits since: tell the
+   user which commits (`tix ws resign <ID> --dry-run` lists them) and ask
+   whether to sign them now (AskUserQuestion). On yes run
+   `tix ws resign <ID> <slug>` (the same trees and messages, signed; the tidy
+   mark stays valid) and check again; on no, or when signing fails (the
+   signing agent refused: the user unlocks it), the repo is not pushed. On
+   the host the user can run the same command, or
+   `git -C <path> rebase --exec 'git commit --amend --no-edit -S' <base>`
+   (`<base>` from `workspace.json`; `--rebase-merges` too when the branch
+   has the lead's `--no-ff` merges), then `git -C <path> push -u origin <branch>`.
+6. **Push.** `git -C <path> push -u <remote> <branch>`, where `<remote>`
+   is `git -C <path> config branch.<branch>.remote` when set, else
+   `origin`. Never `--force`, `+<branch>`, `--delete`, `:<ref>`, `--mirror`,
+   `--tags` or `--prune`, and `--force-with-lease` only after a tidy that
+   rewrote pushed commits: `<remote>/<branch>` is no ancestor of `<branch>` but
+   is one of `refs/tidy-backup/<branch>`, then
+   `git -C <path> push --force-with-lease=<branch>:<that remote sha> <remote> <branch>`.
+7. **Rejected** (not a fast-forward, or the host's push broker refuses it:
+   it rejects force pushes, branch deletes and tag deletes or moves): stop
+   for this repo, don't retry with other options, fetch, rebase or merge
+   to make it pass. Tell the user what git said and the exact command to
+   run on the host, e.g. `git -C <path> push -u origin <branch>` after
+   they've looked at the remote branch. Go on with the other repos.
+
+Without AskUserQuestion (headless, `tix clean --save`): push only when the
+marks gate passed and every commit is signed; otherwise push nothing and
+say why.
+
+Any other force push, rewriting commits below the branching point, and
+deleting branches or tags are always the user's manual steps: never do
+them, even when asked mid-save; give the command instead.
+
+After the pushes, run `tix spec pin <ID>`: it checks each repo's push itself and pins the
+version notes of the vault specs promoted in step 4 to the pushed commit. Then run
+`tix ws fetch` and `tix spec pin --refresh <slug>` per vault-spec slug (it records a merge or a
+tag; it doesn't fetch, and fails at once on a held vault lock, leaving the next save to pin). A repo not
+pushed stays unpinned; say so. Run it in step 8's own flow, repeat-safe.
+
+After a push (or when every repo was already up to date) run `tix ws cleanup <ID>`: it removes
+what tix made and no longer needs (the tidy's scratch clones, the tidy backup refs of pushed
+branches, merged task worktrees where the session can) and prints what it kept and why. It
+never forces, so it needs no question.
+
+Tell them:
+- what was written, as wikilinks
+- per repo: pushed `<branch>` to `<remote>` (with the PR link git printed,
+  if any), up to date, or not pushed and why (marks, unsigned commits,
+  rejected, uncommitted changes `tix ws diff <ID>` still shows), with the
+  command to run on the host
+- that `tix ws rm <ID>` cleans up the worktrees after merge, and `tix clean`
+  the ticket once it is closed
+
+### 9. Publish the descriptions and offer transitions
+
+After step 8, with the vault lock already released (step 7), so a question to the user never
+holds it. Only when the push succeeded: every repo of the ticket pushed or up to date. A repo
+not pushed (the user said no, marks, unsigned, rejected) skips this whole step; say so. Without
+AskUserQuestion (headless) skip it too. Decide **per ticket**, for the ticket and each ticket in
+its `covers`: a synced ticket gets 1 and 2; a manual one has no remote description, so name it
+and skip it (a manual lead such as this one still publishes for its synced children). Skip
+all of it, saying what, when the source's Jira MCP tools (`editJiraIssue`,
+`getJiraIssue`, `getTransitionsForJiraIssue`, `transitionJiraIssue`) are not reachable in this
+session. Call them directly (the session's own MCP server; tix only prints). It is
+repeat-safe: `tix ticket publish` replaces the `## Spec change` section, so a second save writes
+the same text.
+
+1. **Descriptions.** Per synced ticket: read the remote description with `getJiraIssue` right
+   before the edit and write it once to a scratch file `<f>`. Run
+   `tix ticket publish <ID> --dry-run --description-file <f>` for the preview (the old and new
+   section, to show the user) and, on their OK, `tix ticket publish <ID> --description-file <f>`
+   for the text to write (without the file, publish is dry-run only); both read the same fetch.
+   Write that printed description with `editJiraIssue` (`contentFormat: "html"` when
+   the description has a task list, as the `new-ticket` skill says; else markdown). Nothing is
+   written without the OK; a refusal skips that ticket.
+2. **Transitions.** Read each synced ticket's options with `getTransitionsForJiraIssue`, propose
+   one per ticket (the work is done and handed over: the review or done status; mid-ticket:
+   none), then ask **once** with AskUserQuestion with every ticket's proposal (and "leave as it
+   is"). Apply only the chosen ones with `transitionJiraIssue`.
+
+Add what was published and transitioned, and which manual tickets were skipped, to what you tell
+the user.

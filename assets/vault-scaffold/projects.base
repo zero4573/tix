@@ -1,0 +1,43 @@
+filters:
+  and:
+    - file.inFolder("projects")
+properties:
+  file.name:
+    displayName: Name
+  note.repo:
+    displayName: Repo
+  note.groups:
+    displayName: Groups
+  note.depends-on:
+    displayName: Depends on
+views:
+  - type: table
+    name: Projects
+    filters:
+      and:
+        - type == "project"
+    order:
+      - file.name
+      - repo
+      - groups
+      - depends-on
+  - type: table
+    name: Groups
+    filters:
+      and:
+        - type == "group"
+    order:
+      - file.name
+      - status
+  - type: table
+    name: Ungrouped
+    filters:
+      and:
+        - type == "project"
+        - or:
+            - "!groups"
+            - groups.isEmpty()
+    order:
+      - file.name
+      - repo
+      - depends-on

@@ -1,0 +1,782 @@
+package assets
+
+import (
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+const leadWithRef = "plugin/skills/lead/SKILL.md+reference.md"
+
+func pluginTexts(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := fs.WalkDir(Files, "plugin", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".md") || strings.HasSuffix(p, "THIRD_PARTY_NOTICES.md") {
+			return nil
+		}
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			return err
+		}
+		out[p] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out[leadWithRef] = out["plugin/skills/lead/SKILL.md"] + "\n" + out["plugin/skills/lead/reference.md"]
+	return out
+}
+
+func TestEveryMentionedTixNameIsAnAgentOrSkillThePluginShips(t *testing.T) {
+	known := map[string]bool{}
+	for _, dir := range []string{"plugin/agents", "plugin/skills"} {
+		entries, err := fs.ReadDir(Files, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			known[strings.TrimSuffix(e.Name(), ".md")] = true
+		}
+	}
+	re := regexp.MustCompile(`tix:([a-z][a-z-]*[a-z])`)
+	for p, s := range pluginTexts(t) {
+		for _, m := range re.FindAllStringSubmatch(s, -1) {
+			if !known[m[1]] {
+				t.Errorf("%s names tickets:%s, which the plugin doesn't ship", p, m[1])
+			}
+		}
+	}
+}
+
+func TestUserOnlySkillsAreNeverToldToBeLoadedByAModel(t *testing.T) {
+	texts := pluginTexts(t)
+	var userOnly []string
+	for p, s := range texts {
+		if !strings.HasSuffix(p, "/SKILL.md") || !strings.Contains(s, "\ndisable-model-invocation: true\n") {
+			continue
+		}
+		userOnly = append(userOnly, strings.TrimSuffix(strings.TrimPrefix(p, "plugin/skills/"), "/SKILL.md"))
+	}
+	if len(userOnly) < 2 {
+		t.Fatalf("expected at least retro and teach to be user-invoked, got %v", userOnly)
+	}
+	for _, name := range userOnly {
+		re := regexp.MustCompile(`(^|[^/a-z])tickets:` + regexp.QuoteMeta(name) + `\b`)
+		for p, s := range texts {
+			if p == "plugin/skills/"+name+"/SKILL.md" {
+				continue
+			}
+			if loc := re.FindStringIndex(s); loc != nil {
+				t.Errorf("%s refers to the user-invoked skill as tickets:%s (a model can't load it); use /tickets:%s or inline its method", p, name, name)
+			}
+		}
+	}
+}
+
+func TestLeadFinalBlockNextValuesAndSpawnTypesHavePOActions(t *testing.T) {
+	texts := pluginTexts(t)
+	lead, po := texts["plugin/skills/lead/SKILL.md"], texts["plugin/skills/work-ticket/SKILL.md"]
+	m := regexp.MustCompile(`(?m)^Next: (.+)$`).FindStringSubmatch(lead)
+	if m == nil {
+		t.Fatal("lead: no Next: line in the final block")
+	}
+	for _, v := range strings.Split(m[1], " | ") {
+		v = strings.TrimSpace(v)
+		if !strings.Contains(po, "`"+v+"` →") {
+			t.Errorf("PO event loop has no action for Next: %s", v)
+		}
+	}
+	for _, a := range []string{"tix:task", "tix:mechanical", "tix:reviewer", "tix:reviewer-deep"} {
+		if !strings.Contains(lead, "`"+a+"`") {
+			t.Errorf("lead: doesn't name %s", a)
+		}
+	}
+	if !strings.Contains(po, "`tix:task`, `tix:mechanical`, `tix:reviewer(-deep)`") {
+		t.Error("PO: the agents it spawns for the lead aren't listed")
+	}
+}
+
+func TestPOLeadQARoundFixesHold(t *testing.T) {
+	texts := pluginTexts(t)
+	po, kickoff := texts["plugin/skills/work-ticket/SKILL.md"]+" "+texts["plugin/skills/work-ticket/workflow.md"], texts["plugin/skills/work-ticket/kickoff.md"]
+	lead, handover := texts["plugin/skills/lead/SKILL.md"], texts["plugin/skills/lead/handover.md"]
+	tpl := func(name string) string {
+		data, err := fs.ReadFile(Scaffold, "vault-scaffold/templates/"+name+".md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	data, err := fs.ReadFile(Scaffold, "vault-scaffold/AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := string(data)
+	has := func(name, text string, want ...string) {
+		t.Helper()
+		for _, s := range want {
+			if !strings.Contains(text, s) {
+				t.Errorf("%s: missing %q", name, s)
+			}
+		}
+	}
+
+	planSpawn := regexp.MustCompile("built-in `Plan`|`Plan` agent|agent: Plan\\b")
+	for p, s := range texts {
+		if planSpawn.MatchString(s) {
+			t.Errorf("%s asks for a built-in Plan agent", p)
+		}
+	}
+	has("lead", lead, "You draft it yourself", "`tix:reviewer-deep` pass on the contract file")
+
+	has("PO", po, "`$CLAUDE_CODE_SESSION_ID`", "po: session:", "never by a ping timeout", "`orphaned`",
+		"set `agents: []` and `lead: none`", "orphaned tasks NN", "replace it only after its completion notice arrived",
+		"`lead: none` with `status: review` or `done`: spawn no lead unless", "  session: <$CLAUDE_CODE_SESSION_ID")
+	for _, s := range []string{"no answer means stale", "doesn't answer is\nstale"} {
+		if strings.Contains(po, s) {
+			t.Errorf("PO still treats silence as a stale lead: %q", s)
+		}
+	}
+	has("lead", lead, "`orphaned` lines", "re-plan it", "`partial` or\n`orphaned`")
+	has("lead hand-over", handover, "`partial` or `orphaned` line")
+	has("board template", tpl("board"), "\n  session: \"\"\n", "running, orphaned,")
+	has("AGENTS.md", agents, "`orphaned`", "`status` (it runs the gate")
+	has("workflow.md", texts["plugin/skills/work-ticket/workflow.md"], "`po: session:`", "`orphaned`")
+
+	has("workflow.md", texts["plugin/skills/work-ticket/workflow.md"], "`copied`, `answered` and `planned`", "or that have no line",
+		"first, until `## Open` is ≤30", "one entry per theme")
+	has("PO", po, "\"Trimming relay.md\"")
+	has("lead", lead, "set it `copied`", "set the answer entry `copied`", "change the state (last field) of any line")
+	states := regexp.MustCompile(`<open\|[a-z|]+>`)
+	want := "<open|planned|answered|copied>"
+	for name, text := range map[string]string{"PO": po, "lead": lead, "relay template": tpl("relay"), "workflow.md": texts["plugin/skills/work-ticket/workflow.md"]} {
+		got := states.FindAllString(text, -1)
+		if len(got) == 0 {
+			t.Errorf("%s: no relay state list", name)
+		}
+		for _, g := range got {
+			if g != want {
+				t.Errorf("%s: relay states %s, want %s", name, g, want)
+			}
+		}
+	}
+
+	has("kickoff", kickoff, "`<vault>/templates/relay.md`, `board.md` and", "whether or not a clarify round follows")
+	has("PO", po, "it creates `relay.md` and `board.md`", "At once record it")
+	has("lead", lead, "the PO did the kickoff and created `board.md`")
+
+	pr := texts["plugin/skills/pr-feedback/SKILL.md"]
+	if regexp.MustCompile("as in `work-ticket`( §|\\))").MatchString(pr) {
+		t.Error("pr-feedback: still points to work-ticket for task worktrees or merges")
+	}
+	has("pr-feedback", pr, "`lead/SKILL.md` \"5. Merge\"")
+
+	listed := map[string]bool{}
+	for _, s := range []string{"planned", "running", "orphaned", "merged", "partial", "blocked", "dropped", "pending"} {
+		listed[s] = strings.Contains(tpl("board"), s)
+		if !listed[s] {
+			t.Errorf("board template: state %q not listed", s)
+		}
+	}
+}
+
+const checklistGate = `for f in tickets/<source>/<ID>/reviews/*.md; do
+  [ -e "$f" ] || continue
+  rg -q '^## Dispositions' "$f" || echo "$f: no Dispositions"
+  for id in $(rg -o '^- (W[0-9]+-[a-z0-9-]+-[MSC][0-9]+) · ' -r '$1' "$f" | sort -u); do
+    rg -q "^- \[x\] $id · (resolved · |deferred → \[\[.*#deferred)|^- \[-\] $id · kept: " "$f" || echo "$f: $id"
+    rg -q "^- \[.\] $id · (open|fixing)" "$f" && echo "$f: $id open line"
+  done
+done`
+
+func TestDispositionGateLoopMatches(t *testing.T) {
+	texts := pluginTexts(t)
+	for _, p := range []string{leadWithRef, "plugin/skills/work-ticket/handover.md"} {
+		if !strings.Contains(texts[p], checklistGate) {
+			t.Errorf("%s: gate loop differs from the contract", p)
+		}
+	}
+	if !strings.Contains(texts["plugin/skills/lead/handover.md"], "no Dispositions") ||
+		!strings.Contains(texts["plugin/skills/lead/handover.md"], "#deferred") {
+		t.Error("handover.md: the gate must include the no Dispositions, open-line and #deferred checks")
+	}
+	tpl, err := fs.ReadFile(Scaffold, "vault-scaffold/templates/review.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"## Dispositions", "`- [ ] <ID> · open`", "`- [/] <ID> · fixing · task NN`",
+		"`- [x] <ID> · resolved · task NN (<sha>) ✅ <date>`", "`- [-] <ID> · kept: <reason ≤150 chars> ❌ <date>`",
+		"`- [x] <ID> · deferred → [[<ticket>]] · <why> #deferred ✅ <date>`"} {
+		if !strings.Contains(string(tpl), s) {
+			t.Errorf("templates/review.md: missing %s", s)
+		}
+	}
+}
+
+func TestChecklistLineFormsAppearWhereContractNamesThem(t *testing.T) {
+	texts := pluginTexts(t)
+	texts["plugin/skills/work-ticket/SKILL.md"] += " " + texts["plugin/skills/work-ticket/workflow.md"]
+	want := map[string][]string{
+		leadWithRef: {
+			"`vault-checklists-v1`", "rg -n '^- \\[.\\] [0-9]+ · |^(status|wave|last-reviewed):'",
+			"`rg -n '^- \\[x\\] [0-9]+ · (planned|running|orphaned|partial|blocked|pending)|^- \\[ \\] [0-9]+ · (running|orphaned|partial|blocked|pending)|^- \\[[ /]\\] [0-9]+ · merged '",
+			"rg -q \"^- \\[<c>\\] NN · <status> · \" board.md || echo \"NN not updated\"",
+			"· (open|fixing)' tickets/<source>/<ID>/reviews/`", "- [ ] B-nn · w<N> · <repo> · <item> · <finding id> ➕ <date>",
+			"rg -o 'B-[0-9]+' backlog.md | sort -V | tail -1", "`### w<N>`",
+			"`- w<N> fix · <repo> · <from>..<to> · - · <what you checked> · -`",
+			"- [x] <ID> · deferred → [[<ticket>]] · <why> #deferred ✅ <date>",
+		},
+		"plugin/skills/lead/handover.md":       {"#deferred", "- [ ] B-nn · w<N>"},
+		"plugin/skills/wave-review/SKILL.md":   {"`- [ ] <ID> · open`", "(open|fixing)"},
+		"plugin/skills/recall/SKILL.md":        {"(open|fixing)", "<ID>-status.md"},
+		"plugin/skills/work-ticket/SKILL.md":   {"<ID>-status.md", "s/^- \\[.\\] ([0-9]+) · running · /- [\\/] \\1 · orphaned · /", "running lines left"},
+		"plugin/skills/work-ticket/kickoff.md": {"status.md", "<ID>-status.md", `s/TICKET-ID/<ID>/g`, "never overwrite one that exists"},
+		"plugin/agents/reviewer.md":            {"`- [ ] <ID> · open`"},
+		"plugin/agents/reviewer-deep.md":       {"`- [ ] <ID> · open`"},
+	}
+	for p, ss := range want {
+		for _, s := range ss {
+			if !strings.Contains(texts[p], s) {
+				t.Errorf("%s: missing %q", p, s)
+			}
+		}
+	}
+	for p, s := range texts {
+		for _, old := range []string{"pending.md", "done.md", "follow-ups.md"} {
+			if strings.Contains(s, old) {
+				t.Errorf("%s still mentions %s", p, old)
+			}
+		}
+	}
+	err := fs.WalkDir(Scaffold, "vault-scaffold", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(Scaffold, p)
+		if err != nil {
+			return err
+		}
+		olds := []string{"pending.md", "done.md", "follow-ups.md"}
+		if p == "vault-scaffold/AGENTS.md" {
+			olds = olds[:2]
+		}
+		for _, old := range olds {
+			if strings.Contains(string(data), old) {
+				t.Errorf("%s still mentions %s", p, old)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func shBlock(t *testing.T, text, start string) string {
+	t.Helper()
+	i := strings.Index(text, start)
+	if i < 0 {
+		t.Fatalf("no sh block starting %q", start)
+	}
+	j := strings.Index(text[i:], "\n```")
+	if j < 0 {
+		t.Fatal("unterminated sh block")
+	}
+	return text[i : i+j]
+}
+
+func requireTool(t *testing.T, name string, args ...string) {
+	t.Helper()
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		t.Skipf("%s not available: %v", name, err)
+	}
+	if name == "sed" && !strings.Contains(string(out), "GNU") {
+		t.Skip("needs GNU sed")
+	}
+}
+
+func TestBoardSedRecipeOnFixtureBoardLines(t *testing.T) {
+	requireTool(t, "sed", "--version")
+	requireTool(t, "rg", "--version")
+	lead := pluginTexts(t)[leadWithRef]
+	recipe := shBlock(t, lead, `sed -i -E "/^- \[.\] NN · `)
+	run := func(board, nn, c, status, date string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "board.md")
+		if err := os.WriteFile(path, []byte(board), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		script := strings.NewReplacer("NN", nn, "<c>", strings.ReplaceAll(c, "/", `\/`), "<status>", status, "<date>", date).Replace(recipe)
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("recipe: %v\n%s", err, out)
+		}
+		if strings.Contains(string(out), "not updated") {
+			t.Fatalf("recipe reported no change: %s", out)
+		}
+		data, _ := os.ReadFile(path)
+		return string(data)
+	}
+	const plan = "- [ ] 01 · planned · [[T-1-01-api]] · acme-api · w1 · deps - · R-03 ➕ 2026-10-25\n" +
+		"- [ ] 02 · planned · [[T-1-02-ui]] · acme-ui · w1 · deps 01 · plain text task ➕ 2026-10-25\n"
+	b := run(plan, "01", "/", "running", "")
+	if !strings.Contains(b, "- [/] 01 · running · [[T-1-01-api]] · acme-api · w1 · deps - · R-03 ➕ 2026-10-25\n") {
+		t.Errorf("running: %q", b)
+	}
+	b = run(b, "01", "x", "merged fcf8d61", " ✅ 2026-10-26")
+	b = run(b, "01", "x", "merged abc1234", " ✅ 2026-10-27")
+	if !strings.Contains(b, "- [x] 01 · merged abc1234 · [[T-1-01-api]] · acme-api · w1 · deps - · R-03 ➕ 2026-10-25 ✅ 2026-10-27\n") ||
+		strings.Count(b, "✅") != 1 {
+		t.Errorf("merged twice: %q", b)
+	}
+	b = run(b, "01", "/", "partial", "")
+	if !strings.Contains(b, "- [/] 01 · partial · [[T-1-01-api]] · acme-api · w1 · deps - · R-03 ➕ 2026-10-25\n") {
+		t.Errorf("merged to partial: %q", b)
+	}
+	b = run(b, "02", "-", "dropped", " ❌ 2026-10-28")
+	if !strings.Contains(b, "- [-] 02 · dropped · [[T-1-02-ui]] · acme-ui · w1 · deps 01 · plain text task ➕ 2026-10-25 ❌ 2026-10-28\n") {
+		t.Errorf("dropped: %q", b)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "board.md"), []byte(plan), 0o644)
+	cmd := exec.Command("sh", "-c", strings.NewReplacer("NN", "09", "<c>", "x", "<status>", "merged -", "<date>", "").Replace(recipe))
+	cmd.Dir = dir
+	if out, _ := cmd.CombinedOutput(); !strings.Contains(string(out), "not updated") {
+		t.Errorf("missing line not reported: %q", out)
+	}
+}
+
+func TestDispositionGateOnFixtureReviews(t *testing.T) {
+	requireTool(t, "rg", "--version")
+	lead := pluginTexts(t)[leadWithRef]
+	gate := strings.NewReplacer("<source>", "manual", "<ID>", "T-1").Replace(shBlock(t, lead, "for f in tickets/<source>/<ID>/reviews/*.md; do"))
+	run := func(files map[string]string) string {
+		t.Helper()
+		dir := t.TempDir()
+		rev := filepath.Join(dir, "tickets", "manual", "T-1", "reviews")
+		if err := os.MkdirAll(rev, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for n, c := range files {
+			if err := os.WriteFile(filepath.Join(rev, n), []byte(c), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command("sh", "-c", gate)
+		cmd.Dir = dir
+		out, _ := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+	const findings = "## Must-fix\n- W1-acme-api-M01 · a.go:1 · p · f · t\n## Should-fix\n- W1-acme-api-S01 · a.go:2 · p · f · t\n## Consider\n- W1-acme-api-C01 · a.go:3 · p · f · t\n\n## Dispositions\n"
+	const closed = "- [x] W1-acme-api-M01 · resolved · task 02 (1cf4eb1) ✅ 2026-10-26\n" +
+		"- [-] W1-acme-api-S01 · kept: intended ❌ 2026-10-26\n" +
+		"- [x] W1-acme-api-C01 · deferred → [[PROJ-40]] · later #deferred ✅ 2026-10-26\n"
+	if out := run(nil); out != "" {
+		t.Errorf("no reviews: %q", out)
+	}
+	if out := run(map[string]string{"w1.md": findings + closed}); out != "" {
+		t.Errorf("all closed: %q", out)
+	}
+	open := findings + strings.Replace(closed, "- [x] W1-acme-api-M01 · resolved · task 02 (1cf4eb1) ✅ 2026-10-26", "- [ ] W1-acme-api-M01 · open", 1)
+	if out := run(map[string]string{"w1.md": open}); !strings.Contains(out, "w1.md: W1-acme-api-M01") {
+		t.Errorf("open line: %q", out)
+	}
+	box := findings + strings.Replace(closed, "- [x] W1-acme-api-M01 · resolved · task 02 (1cf4eb1) ✅ 2026-10-26", "- [x] W1-acme-api-M01 · open", 1)
+	if out := run(map[string]string{"w1.md": box}); !strings.Contains(out, "w1.md: W1-acme-api-M01") {
+		t.Errorf("box-only change: %q", out)
+	}
+	unticked := findings + strings.Replace(closed, "- [x] W1-acme-api-M01 · resolved", "- [ ] W1-acme-api-M01 · resolved", 1)
+	if out := run(map[string]string{"w1.md": unticked}); !strings.Contains(out, "w1.md: W1-acme-api-M01") {
+		t.Errorf("unchecked resolved: %q", out)
+	}
+	nodef := findings + strings.Replace(closed, " #deferred", "", 1)
+	if out := run(map[string]string{"w1.md": nodef}); !strings.Contains(out, "w1.md: W1-acme-api-C01") {
+		t.Errorf("deferred without #deferred: %q", out)
+	}
+	if out := run(map[string]string{"w1.md": "## Must-fix\n- W1-acme-api-M01 · a · p · f · t\n"}); !strings.Contains(out, "no Dispositions") {
+		t.Errorf("missing section: %q", out)
+	}
+	if out := run(map[string]string{"w1.md": "## Summary\nclean\n\n## Dispositions\n"}); out != "" {
+		t.Errorf("review without findings: %q", out)
+	}
+}
+
+func TestPOWakesLeadOncePerWaveNotPerFinishedAgent(t *testing.T) {
+	texts := pluginTexts(t)
+	po, lead := texts["plugin/skills/work-ticket/SKILL.md"], texts["plugin/skills/lead/SKILL.md"]
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	has := func(name, text string, want ...string) {
+		t.Helper()
+		for _, s := range want {
+			if !strings.Contains(norm(text), norm(s)) {
+				t.Errorf("%s: missing %q", name, s)
+			}
+		}
+	}
+	tplData, err := fs.ReadFile(Scaffold, "vault-scaffold/templates/board.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	has("PO", po, "batch it per wave", "wake it **once per wave**", "**no\n  entry of the same wave and kind**",
+		"\"wave 2 finished: tasks 04 done, 05 partial,", "\"wave 2 reviews\n  written: <slug>, <slug>\"",
+		"A task reporting `blocked` or failed (or dying) goes to the lead **at once**", "no early merge, no timeout",
+		"at once,\n  never batched", "with its `wave:`", "  finished:\n", "`finished: []`",
+		"finished, unsent: 05", "also right after such a notice")
+	for _, s := range []string{"SendMessage the lead one line: \"task 03 finished", "forward it like any finished task"} {
+		if strings.Contains(po, s) {
+			t.Errorf("PO still wakes the lead per task: %q", s)
+		}
+	}
+
+	has("lead", lead, "carries `wave: <N>`", "  wave: 3\n  prompt: Task 03:", "The PO wakes you **once per wave**",
+		"Merge **all** of them in this run", "never\nexpect one message per task", "go on merging the rest of the wave",
+		"all the wave's reviews are written",
+		"merge the finished ones only from the wave line", "A fix or follow-up task takes the wave of the work it fixes")
+	if strings.Contains(lead, "When the PO tells you a task finished") {
+		t.Error("lead still expects one message per finished task")
+	}
+
+	has("PO", po, "**State lives in files, never only in chat:**", "compacts by itself")
+	has("workflow.md", texts["plugin/skills/work-ticket/workflow.md"], "w<N>|- · task NN|review <repo>|design <role>|verify|summary|analyst")
+	has("board template", string(tplData), "\n  agents: []\n  finished: []\n")
+	has("workflow.md", texts["plugin/skills/work-ticket/workflow.md"], "wakes the lead once per wave")
+}
+
+func TestFollowUpsAreLeadsCallExceptSourceFilingAndMustFixDeferral(t *testing.T) {
+	texts := pluginTexts(t)
+	texts["plugin/skills/work-ticket/SKILL.md"] += " " + texts["plugin/skills/work-ticket/workflow.md"]
+	for p, want := range map[string]string{
+		"plugin/skills/lead/SKILL.md":        "**Follow-ups are your call**",
+		"plugin/skills/lead/handover.md":     "Decide each open item of the backlog's `## Open` yourself",
+		"plugin/skills/spec/SKILL.md":        "Never run `tix new` without that answer",
+		"plugin/skills/retro/SKILL.md":       "never file unasked",
+		"plugin/skills/work-ticket/SKILL.md": "are the lead's call",
+	} {
+		if !strings.Contains(texts[p], want) {
+			t.Errorf("%s: missing %q", p, want)
+		}
+	}
+	for _, bad := range []string{"Never file a ticket on your own", "Never run `tix new` unasked",
+		"nothing is filed with `tix new` before the answer", "at most 5 candidate"} {
+		for _, p := range []string{"plugin/skills/lead/SKILL.md", "plugin/skills/lead/handover.md", "plugin/skills/work-ticket/SKILL.md"} {
+			if strings.Contains(texts[p], bad) {
+				t.Errorf("%s: still has %q", p, bad)
+			}
+		}
+	}
+}
+
+func TestNewTicketFilesOnlyAfterUserConfirmsSourceAndDraft(t *testing.T) {
+	texts := pluginTexts(t)
+	s, ok := texts["plugin/skills/new-ticket/SKILL.md"]
+	if !ok {
+		t.Fatal("plugin/skills/new-ticket/SKILL.md missing")
+	}
+	fm := frontmatter(t, s)
+	if v, _, _ := field(fm, "name"); v != "new-ticket" {
+		t.Errorf("new-ticket: name %q", v)
+	}
+	if v, _, _ := field(fm, "description"); len(v) < 40 {
+		t.Errorf("new-ticket: description too short: %q", v)
+	}
+	if n := strings.Count(s, "\n"); n > 110 {
+		t.Errorf("new-ticket is %d lines, cap 110", n)
+	}
+	for _, want := range []string{
+		"AskUserQuestion", "create nothing", "Nothing is filed without a yes",
+		"`ticket-type: epic`", "parent: {key: <ID>}", "`covers`",
+		"`tix new --type", "tickets/<source>/<NEW-ID>/<NEW-ID>.md", "tickets/manual/",
+		"`tix sync --source <source>`", "write:jira:agent-interface", "Cost guard",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("new-ticket: missing %q", want)
+		}
+	}
+	for p, want := range map[string]string{
+		"plugin/skills/work-ticket/SKILL.md": "`/tix:new-ticket`",
+		"plugin/skills/spec/SKILL.md":        "`/tix:new-ticket`",
+	} {
+		if !strings.Contains(texts[p], want) {
+			t.Errorf("%s: missing %q", p, want)
+		}
+	}
+	if data, err := fs.ReadFile(Files, "plugin/.claude-plugin/plugin.json"); err != nil || !strings.Contains(string(data), "new-ticket") {
+		t.Errorf("plugin.json: new-ticket not described (%v)", err)
+	}
+}
+
+func TestFollowUpOptionsReadTheSameInEveryFile(t *testing.T) {
+	texts := pluginTexts(t)
+	texts["plugin/skills/work-ticket/SKILL.md"] += " " + texts["plugin/skills/work-ticket/workflow.md"]
+	for _, p := range []string{"vault-scaffold/AGENTS.md", "vault-scaffold/templates/backlog.md"} {
+		data, err := fs.ReadFile(Scaffold, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		texts[p] = string(data)
+	}
+	const opts = "A, this ticket; B, a new ticket; C, an existing ticket (name it); D, leave it in the backlog (backlog items only)"
+	for _, p := range []string{
+		"plugin/skills/lead/SKILL.md", "plugin/skills/lead/handover.md", "plugin/skills/work-ticket/SKILL.md",
+		"vault-scaffold/AGENTS.md", "vault-scaffold/templates/backlog.md",
+	} {
+		if !strings.Contains(texts[p], opts) {
+			t.Errorf("%s: missing the A-D options wording", p)
+		}
+	}
+	for _, p := range []string{"plugin/skills/lead/SKILL.md", "plugin/skills/work-ticket/SKILL.md", "vault-scaffold/AGENTS.md"} {
+		if !strings.Contains(texts[p], "must-fix") {
+			t.Errorf("%s: missing the must-fix exception", p)
+		}
+	}
+	for _, p := range []string{"plugin/skills/lead/handover.md", "plugin/skills/work-ticket/SKILL.md"} {
+		if !strings.Contains(texts[p], "/tix:new-ticket") {
+			t.Errorf("%s: filing at the source must go through /tix:new-ticket", p)
+		}
+	}
+	if !strings.Contains(texts["plugin/skills/work-ticket/SKILL.md"], "Never fix tasks or `kept:` lines") {
+		t.Error("PO texts must leave fix tasks and kept: lines to the lead")
+	}
+	if !strings.Contains(texts["plugin/skills/wave-review/SKILL.md"], "you never file tickets") {
+		t.Error("wave-review: reviewer must never file tickets")
+	}
+	if !strings.Contains(texts["plugin/skills/retro/SKILL.md"], "a retro item only becomes\na backlog item") {
+		t.Error("retro: in a ticket a retro item only becomes a backlog item")
+	}
+	if !strings.Contains(texts["vault-scaffold/AGENTS.md"], "Agents never file at a ticket's source") {
+		t.Error("scaffold AGENTS.md must forbid filing at a source unasked")
+	}
+	for _, bad := range []string{"you pick become follow-up", "Writing a `deferred` line means filing"} {
+		for p, s := range texts {
+			if strings.Contains(s, bad) {
+				t.Errorf("%s: contains %q", p, bad)
+			}
+		}
+	}
+}
+
+func TestQuotedHeadingsCitedAfterAGENTSOrWorkflowExist(t *testing.T) {
+	headings := func(p string) map[string]bool {
+		data, err := fs.ReadFile(Files, p)
+		if err != nil {
+			data, err = fs.ReadFile(Scaffold, p)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, l := range strings.Split(string(data), "\n") {
+			if m := regexp.MustCompile(`^#{1,6} +(.+?) *$`).FindStringSubmatch(l); m != nil {
+				out[m[1]] = true
+			}
+		}
+		return out
+	}
+	agents := headings("vault-scaffold/AGENTS.md")
+	workflow := headings("plugin/skills/work-ticket/workflow.md")
+	agentsRe := regexp.MustCompile("(?:vault's `AGENTS\\.md`,? \\(?|\\[\\[AGENTS\\]\\],? \\(?|\\(see |; see )\"([^\"]+)\"")
+	workflowRe := regexp.MustCompile("work-ticket/workflow\\.md`?,? \\(?\"([^\"]+)\"")
+	texts := pluginTexts(t)
+	err := fs.WalkDir(Scaffold, "vault-scaffold", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+			return err
+		}
+		data, err := fs.ReadFile(Scaffold, p)
+		texts[p] = string(data)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(set map[string]bool, cited string) bool {
+		cited = strings.Join(strings.Fields(cited), " ")
+		for h := range set {
+			if h == cited || strings.HasPrefix(h, cited+":") {
+				return true
+			}
+		}
+		return false
+	}
+	n := 0
+	for p, s := range texts {
+		for _, m := range agentsRe.FindAllStringSubmatch(s, -1) {
+			n++
+			if !has(agents, m[1]) {
+				t.Errorf("%s cites AGENTS.md %q: no such heading", p, m[1])
+			}
+		}
+		for _, m := range workflowRe.FindAllStringSubmatch(s, -1) {
+			n++
+			if !has(workflow, m[1]) {
+				t.Errorf("%s cites workflow.md %q: no such heading", p, m[1])
+			}
+		}
+	}
+	if n < 10 {
+		t.Errorf("only %d citations matched: the pattern is stale", n)
+	}
+}
+
+func TestLeadMergeChainRecipesRunInTempGitRepo(t *testing.T) {
+	requireTool(t, "sed", "--version")
+	requireTool(t, "rg", "--version")
+	requireTool(t, "git", "--version")
+	lead := pluginTexts(t)[leadWithRef]
+	span := func(start, end string) string {
+		t.Helper()
+		i := strings.Index(lead, start)
+		if i < 0 {
+			t.Fatalf("no recipe starting %q", start)
+		}
+		j := strings.Index(lead[i:], end)
+		if j < 0 {
+			t.Fatalf("recipe %q has no end %q", start, end)
+		}
+		return lead[i : i+j+len(end)]
+	}
+	mergeCmd := span("git merge --no-ff -q ", `<subject>"`)
+	deleteCmd := span("git worktree remove ", "<task-slug>`")
+	deleteCmd = strings.TrimSuffix(deleteCmd, "`")
+	resumeCmd := span("t=$(git -C <ws>/<slug> rev-parse", `echo merged`)
+	revertCmd := span("git revert -m 1 <merge-sha>", "<merge-sha>")
+	boardCmd := shBlock(t, lead, `sed -i -E "/^- \[.\] NN · `)
+
+	dir := t.TempDir()
+	env := append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_EDITOR=true")
+	sh := func(script string) (string, error) {
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	must := func(script string) string {
+		t.Helper()
+		out, err := sh(script)
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", script, err, out)
+		}
+		return out
+	}
+	fill := func(s, nn, slug string) string {
+		return strings.NewReplacer("git -C <ws>/<slug> ", "git ", "<ws>/<slug>", dir, "<ws>/tasks/<slug>-NN", "tasks/repo-"+nn,
+			"<ID>", "T-1", "NN", nn, "<task-slug>", slug, "<subject>", "title "+slug, "<base>", "main").Replace(s)
+	}
+	must("git init -q -b main . && git commit -q --allow-empty -m base && git checkout -q -b feature/T-1")
+	board := "- [ ] 01 · planned · [[T-1-01-api]] · repo · w1 · deps - · R-03 ➕ 2026-10-25\n"
+	must("printf '%s' " + "'" + board + "' > board.md")
+	branch := func(nn, slug, file string) {
+		t.Helper()
+		must("git branch task/T-1-" + nn + "-" + slug + " && git worktree add -q tasks/repo-" + nn + " task/T-1-" + nn + "-" + slug)
+		if file != "" {
+			must("cd tasks/repo-" + nn + " && echo x > " + file + " && git add " + file + " && git commit -q -m work-" + nn)
+		}
+	}
+	merged := func(nn, slug string) bool {
+		t.Helper()
+		out, err := sh(fill(resumeCmd, nn, slug))
+		return err == nil && strings.Contains(out, "merged")
+	}
+	branch("01", "api", "a.txt")
+	branch("02", "ui", "")
+	branch("03", "db", "d.txt")
+	if merged("02", "ui") {
+		t.Error("resume: a branch with no commits (an ancestor at its fork) counted as merged")
+	}
+	if merged("03", "db") || merged("01", "api") {
+		t.Error("resume: an unmerged branch counted as merged")
+	}
+	must(fill(mergeCmd, "01", "api"))
+	status := strings.TrimSpace(must("git rev-parse --short HEAD"))
+	script := strings.NewReplacer("NN", "01", "<c>", "x", "<status>", "merged "+status, "<date>", " ✅ 2026-10-26").Replace(boardCmd)
+	must(script)
+	if b := must("cat board.md"); !strings.Contains(b, "- [x] 01 · merged "+status+" · [[T-1-01-api]]") || !strings.HasSuffix(strings.TrimSpace(b), "✅ 2026-10-26") {
+		t.Errorf("board after merge: %q", b)
+	}
+	if !merged("01", "api") {
+		t.Error("resume: a merged branch not detected")
+	}
+	if merged("02", "ui") || merged("03", "db") {
+		t.Error("resume: unmerged branches counted as merged after another merge")
+	}
+	must(fill(deleteCmd, "01", "api"))
+	if out := must("git branch --list task/T-1-01-api"); strings.TrimSpace(out) != "" {
+		t.Errorf("merged branch not deleted: %q", out)
+	}
+	if out, err := sh(fill(deleteCmd, "03", "db")); err == nil {
+		t.Errorf("delete of an unmerged branch succeeded: %s", out)
+	}
+	if out := must("git branch --list task/T-1-03-db"); strings.TrimSpace(out) == "" {
+		t.Error("unmerged branch was deleted")
+	}
+	must(fill(mergeCmd, "03", "db"))
+	sha := strings.TrimSpace(must("git rev-parse HEAD"))
+	must(strings.ReplaceAll(revertCmd, "<merge-sha>", sha))
+	if _, err := os.Stat(filepath.Join(dir, "d.txt")); err == nil {
+		t.Error("revert left the merged file")
+	}
+	if out := must("git log --merges --format=%s -1"); !strings.Contains(out, "title db") {
+		t.Errorf("merge commit gone after revert: %q", out)
+	}
+}
+
+func TestStoppedTaskKeepsItsWorkWithWIPCommit(t *testing.T) {
+	texts := pluginTexts(t)
+	has := func(name string, parts ...string) {
+		t.Helper()
+		for _, p := range parts {
+			if !strings.Contains(texts[name], p) {
+				t.Errorf("%s: missing %q", name, p)
+			}
+		}
+	}
+	has("plugin/skills/work-ticket/SKILL.md", "Stopping a task", "commit what you have as a WIP commit", "wip: <task title>", "Hard-stop it only if")
+	has("plugin/skills/task-agent/SKILL.md", "On \"stop:", "git add -A", "wip: <task title>", "status `partial`")
+	has(leadWithRef, "A stopped or dropped task whose worktree is dirty", "add -A", "commit --no-gpg-sign -m \"wip: <task title>\"", "never `--force`", "deleting it is the user's call")
+}
+
+func TestPOSpecSideAndTemplates(t *testing.T) {
+	read := func(p string) string {
+		b, err := fs.ReadFile(Files, p)
+		if err != nil {
+			b, err = fs.ReadFile(Scaffold, p)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	has := func(name, body string, want ...string) {
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s: missing %q", name, w)
+			}
+		}
+	}
+	skill := read("plugin/skills/work-ticket/SKILL.md")
+	has("work-ticket", skill, "tix relay add <ID> --from user --to lead", "`tix relay state <ID> R-nn <state>`", "never `>>`", "`tix spec diff <ID>`", "`specs.md`")
+	if strings.Contains(skill, "append with `>>`") {
+		t.Error("work-ticket still appends to relay.md with >>")
+	}
+	has("specs.md", read("plugin/skills/work-ticket/specs.md"), "tix spec diff <ID>", "`## Specs`", "tickets/<source>/<ID>/specs/<slug>/", "promotes it", "at once", "`ready`", "`implemented`")
+	has("kickoff", read("plugin/skills/work-ticket/kickoff.md"), "`spec-draft.md`", "write the spec diff")
+	has("workflow", read("plugin/skills/work-ticket/workflow.md"), "`tix relay add`", "`tix relay state`")
+	has("board template", read("vault-scaffold/templates/board.md"), "## Specs\n", "draft|ready|building|merged", "needs <slug>/<capability>")
+	task := read("vault-scaffold/templates/task.md")
+	has("task template", task, "`board.md` `commit-style:`", "never the ticket ID", "full check set", "DB\nsuites included")
+}

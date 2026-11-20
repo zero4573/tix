@@ -45,7 +45,7 @@ A <repo> argument is a slug or <provider>/<owner>/<repo>.`,
 	}
 	cmd.AddCommand(wsReposCmd(), wsCloneCmd(), wsAddCmd(), wsLsCmd(), wsDiffCmd(),
 		wsDiffCheckCmd(), wsRmCmd(), wsMarkCmd(), wsMarksCmd(), wsFetchCmd(), wsGcCmd(),
-		wsTaskCleanCmd())
+		wsTidyCleanCmd(), wsTaskCleanCmd(), wsRefreshCmd(), wsResignCmd(), wsCleanupCmd(), wsEnvCmd(), wsRunCmd(), wsBrowseCmd())
 	return cmd
 }
 

@@ -1,0 +1,134 @@
+# tix ws tidy-clean: removes the tidy skill's scratch clones under tasks/
+mkdir home/Documents/Obsidian/a/.obsidian
+mkdir home/Documents/Obsidian/a/tickets/MAN-1
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-a/github/acme/billing
+exec tix ws add MAN-1 github-acme-billing --base main --desc tidy
+env R=home/Projects/work-a/MAN-1/github-acme-billing
+env T=home/Projects/work-a/MAN-1/tasks
+env C=home/Projects/work-a/MAN-1/tasks/tidy-github-acme-billing
+
+# none
+exec tix ws tidy-clean MAN-1
+stdout 'tix ws: no tidy clones in .*[/\\]tasks$'
+
+# a merged clone (the same commits as the ticket branch): removed
+mkdir $T
+exec git clone -q $R $C
+exec tix ws tidy-clean MAN-1 --dry-run
+stdout 'tix ws: would remove .*tidy-github-acme-billing'
+exists $C
+exec tix ws tidy-clean MAN-1
+stdout 'tix ws: removed .*tidy-github-acme-billing'
+! exists $C
+
+# an unmerged clone: kept, exit 1
+exec git clone -q $R $C
+cp seed/README.md $C/new.txt
+exec git -C $C add new.txt
+exec git -C $C commit -q -m new
+# tix's git runs in a scratch clone of a ticket worktree (its origin is a
+# local path inside the work root), so a tidy task can check its result;
+# a clone of a folder outside the vault's roots is refused
+exec tix ws diff-check -C $C HEAD~1..HEAD
+! stdout .
+exec git clone -q seed outside
+! exec tix ws diff-check -C outside HEAD
+stderr 'safe list:'
+stderr '"remote.origin.url"'
+! exec tix ws tidy-clean MAN-1
+stderr 'tidy-github-acme-billing: bookmark [0-9a-f]{7} isn.t on feature/tidy, not removing \(use --force\)'
+stderr 'tidy-clean: kept 1 clone\(s\)'
+! stdout 'removed'
+exists $C
+! exec tix ws tidy-clean MAN-1 --dry-run
+! stdout 'would remove'
+exists $C
+
+# --force removes it
+exec tix ws tidy-clean MAN-1 --force --dry-run
+stdout 'would remove'
+exists $C
+exec tix ws tidy-clean MAN-1 --force
+stdout 'tix ws: removed .*tidy-github-acme-billing'
+! exists $C
+
+# an unknown slug is kept, and a task worktree dir is never touched
+mkdir $T/tidy-github-acme-other
+mkdir $T/github-acme-billing-01
+! exec tix ws tidy-clean MAN-1
+stderr 'tidy-github-acme-other: no repo github-acme-other in the workspace, not removing'
+exists $T/tidy-github-acme-other
+exists $T/github-acme-billing-01
+exec tix ws tidy-clean MAN-1 --force
+exists $T/github-acme-billing-01
+! exists $T/tidy-github-acme-other
+
+# a clone without the bookmark
+exec git clone -q $R $C
+exec git -C $C branch -m feature/tidy other
+! exec tix ws tidy-clean MAN-1
+stderr 'no bookmark feature/tidy, not removing'
+exec tix ws tidy-clean MAN-1 --force
+! exists $C
+
+# a tidy dir that isn't a clone: kept (git must not read a parent repository)
+mkdir $C
+! exec tix ws tidy-clean MAN-1
+stderr 'no bookmark feature/tidy, not removing'
+exec tix ws tidy-clean MAN-1 --force
+! exists $C
+
+# a corrupt workspace.json is reported, nothing removed
+mkdir $C
+cp home/Projects/work-a/MAN-1/workspace.json ws.json
+cp bad.json home/Projects/work-a/MAN-1/workspace.json
+! exec tix ws tidy-clean MAN-1 --force
+stderr 'tidy-clean: '
+exists $C
+cp ws.json home/Projects/work-a/MAN-1/workspace.json
+exec tix ws tidy-clean MAN-1 --force
+! exists $C
+
+# errors
+! exec tix ws tidy-clean MAN-9
+stderr 'tidy-clean: no workspace at'
+! exec tix ws tidy-clean nope
+stderr 'tidy-clean: not a ticket ID'
+
+# a ref that is a link or a FIFO isn't read (a FIFO would block): no bookmark
+exec git clone -q $R $C
+cp $C/.git/refs/heads/feature/tidy ref.txt
+rm $C/.git/refs/heads/feature/tidy
+symlink $C/.git/refs/heads/feature/tidy -> $WORK/ref.txt
+! exec tix ws tidy-clean MAN-1
+stderr 'no bookmark feature/tidy, not removing'
+[!exec:mkfifo] skip 'no mkfifo'
+rm $C/.git/refs/heads/feature/tidy
+exec mkfifo $C/.git/refs/heads/feature/tidy
+! exec tix ws tidy-clean MAN-1
+stderr 'no bookmark feature/tidy, not removing'
+exec tix ws tidy-clean MAN-1 --force
+! exists $C
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+---
+-- gitconfig --
+# Trusted only because it is the user's global config (tix checks a repo's
+# own config, never this): the local remotes stand in for real hosts
+[protocol "file"]
+	allow = always
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+-- bad.json --
+{
+-- seed/README.md --
+# billing

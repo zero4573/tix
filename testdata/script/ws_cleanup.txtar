@@ -1,0 +1,75 @@
+# tix ws cleanup: spent tidy clones, tidy backup refs and merged task worktrees
+mkdir home/Documents/Obsidian/a/.obsidian
+mkdir home/Documents/Obsidian/a/tickets/MAN-1
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-a/github/acme/billing
+exec tix ws add MAN-1 github-acme-billing --base main --desc tidy
+env R=home/Projects/work-a/MAN-1/github-acme-billing
+env T=home/Projects/work-a/MAN-1/tasks
+mkdir $T
+
+# two commits on the ticket branch; a second tidy's clone (a suffixed dir)
+# squashes them, the lead fetches the result, backs the old tip up and moves
+# the branch
+cp seed/README.md $R/one.txt
+exec git -C $R add one.txt
+exec git -C $R commit -q -m one
+cp seed/README.md $R/two.txt
+exec git -C $R add two.txt
+exec git -C $R commit -q -m two
+exec git clone -q $R $T/tidy-github-acme-billing-2
+exec git -C $T/tidy-github-acme-billing-2 reset -q --soft HEAD~2
+exec git -C $T/tidy-github-acme-billing-2 commit -q -m 'one and two'
+exec git -C $R rev-parse HEAD
+cp stdout old
+exec git -C $R fetch -q $WORK/$T/tidy-github-acme-billing-2 feature/tidy
+exec git -C $R update-ref refs/tidy-backup/feature/tidy HEAD
+exec git -C $R reset -q --hard FETCH_HEAD
+
+# the branch was rewritten once more with the same tree (as signing does):
+# the clone's commit is on no ref any more, but its tree is the branch's
+exec git -C $R commit -q --amend -m 'one and two, reworded'
+
+# not pushed yet: the clone goes, the backup ref stays
+exec tix ws cleanup MAN-1 --dry-run
+stdout 'would remove .*tidy-github-acme-billing-2'
+exists $T/tidy-github-acme-billing-2
+exec tix ws cleanup MAN-1
+stdout 'tix ws: removed .*tidy-github-acme-billing-2'
+stderr 'refs/tidy-backup/feature/tidy kept: feature/tidy isn.t pushed'
+! exists $T/tidy-github-acme-billing-2
+exec git -C $R rev-parse refs/tidy-backup/feature/tidy
+cmp stdout old
+
+# pushed: the backup ref goes
+exec git -C $R push -q origin feature/tidy
+exec tix ws cleanup MAN-1 --dry-run
+stdout 'would delete refs/tidy-backup/feature/tidy of github-acme-billing'
+exec tix ws cleanup MAN-1
+stdout 'tix ws: deleted refs/tidy-backup/feature/tidy of github-acme-billing \([0-9a-f]{7}\)'
+! exec git -C $R rev-parse -q --verify refs/tidy-backup/feature/tidy
+
+# a clone with work that is nowhere else stays
+exec git clone -q $R $T/tidy-github-acme-billing
+cp seed/README.md $T/tidy-github-acme-billing/new.txt
+exec git -C $T/tidy-github-acme-billing add new.txt
+exec git -C $T/tidy-github-acme-billing commit -q -m new
+exec tix ws cleanup MAN-1
+stderr 'tidy-github-acme-billing: bookmark [0-9a-f]{7} isn.t on feature/tidy, not removing'
+exists $T/tidy-github-acme-billing
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+---
+-- gitconfig --
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+-- seed/README.md --
+# billing

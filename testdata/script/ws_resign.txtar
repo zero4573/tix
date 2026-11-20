@@ -1,0 +1,109 @@
+# tix ws resign: sign a ticket's unpushed commits once the history is final
+[!exec:ssh-keygen] skip 'no ssh-keygen'
+mkdir home/Documents/Obsidian/a/.obsidian
+mkdir home/Documents/Obsidian/a/tickets/MAN-1
+cp man-1.md home/Documents/Obsidian/a/tickets/MAN-1/MAN-1.md
+exec ssh-keygen -q -t ed25519 -N '' -f $WORK/key
+expand gitconfig
+exec git init -q -b main seed
+exec git -C seed add -A
+exec git -C seed commit -q -m init
+exec git clone -q --bare seed remote/acme/billing.git
+exec git clone -q git@github.com:acme/billing.git home/Projects/repo-a/github/acme/billing
+exec tix ws add MAN-1 github-acme-billing --base main --desc sign
+env R=home/Projects/work-a/MAN-1/github-acme-billing
+
+# nothing unpushed
+exec tix ws resign MAN-1 --dry-run
+! stdout .
+exec tix ws resign MAN-1
+stdout 'nothing to sign \(0 unpushed commit\(s\)\)'
+
+# two unsigned commits, the second with a body
+cp seed/README.md $R/one.txt
+exec git -C $R add one.txt
+exec git -C $R commit -q -m one
+cp seed/README.md $R/two.txt
+exec git -C $R add two.txt
+exec git -C $R commit -q -m two -m 'why two'
+exec git -C $R log --format=%T%n%an%n%ae%n%at%n%cn%n%ct%n%B main..HEAD
+cp stdout before
+! exec tix ws resign MAN-1 --dry-run
+stdout '^github-acme-billing\t[0-9a-f]{7}\tone$'
+stdout '^github-acme-billing\t[0-9a-f]{7}\ttwo$'
+exec git -C $R cat-file commit HEAD
+! stdout '^gpgsig '
+
+# signed: the same trees, people, dates and messages; only the ids change
+exec tix ws resign MAN-1
+stdout '^tix ws: github-acme-billing: signed 2 commit\(s\), feature/sign [0-9a-f]{7} → [0-9a-f]{7}$'
+exec git -C $R log --format=%T%n%an%n%ae%n%at%n%cn%n%ct%n%B main..HEAD
+cmp stdout before
+exec git -C $R cat-file commit HEAD
+stdout '^gpgsig '
+exec git -C $R cat-file commit HEAD~1
+stdout '^gpgsig '
+exec git -C $R status --short
+! stdout .
+exec tix ws resign MAN-1 --dry-run
+! stdout .
+
+# an open task branch forked from an unpushed commit: refused, nothing moves
+# (re-creating the fork point would bring its unsigned copy back with the
+# task's merge); once the task is merged it signs
+cp seed/README.md $R/lead.txt
+exec git -C $R add lead.txt
+exec git -C $R commit -q -m 'lead fix'
+exec git -C $R rev-parse HEAD
+cp stdout leadtip
+exec git -C $R worktree add -q $WORK/home/Projects/work-a/MAN-1/tasks/github-acme-billing-01 -b task/MAN-1-01-x HEAD
+cp seed/README.md home/Projects/work-a/MAN-1/tasks/github-acme-billing-01/task.txt
+exec git -C home/Projects/work-a/MAN-1/tasks/github-acme-billing-01 add task.txt
+exec git -C home/Projects/work-a/MAN-1/tasks/github-acme-billing-01 commit -q -m task
+! exec tix ws resign MAN-1
+stderr 'not signed: open task branch\(es\) task/MAN-1-01-x fork from unpushed commits'
+exec git -C $R rev-parse HEAD
+cmp stdout leadtip
+exec git -C $R merge -q --no-ff --no-gpg-sign task/MAN-1-01-x -m 'merge the task'
+exec tix ws resign MAN-1
+stdout 'signed 3 commit\(s\)'
+exec git -C $R worktree remove $WORK/home/Projects/work-a/MAN-1/tasks/github-acme-billing-01
+
+# a new unsigned commit: only it is re-created
+exec git -C $R rev-parse HEAD
+cp stdout tip
+cp seed/README.md $R/three.txt
+exec git -C $R add three.txt
+exec git -C $R commit -q -m three
+exec tix ws resign MAN-1 github-acme-billing
+stdout 'signed 1 commit\(s\)'
+exec git -C $R rev-parse HEAD~1
+cmp stdout tip
+
+# uncommitted changes: skipped, exit 1
+cp seed/README.md $R/four.txt
+exec git -C $R add four.txt
+exec git -C $R commit -q -m four
+cp seed/README.md $R/dirty.txt
+! exec tix ws resign MAN-1
+stderr 'uncommitted changes, not signed'
+rm $R/dirty.txt
+
+# an unknown repo
+! exec tix ws resign MAN-1 nope
+stderr 'no repo .nope. in its workspace'
+
+-- man-1.md --
+---
+summary: First
+status: in-progress
+---
+-- gitconfig --
+[url "$WORK/remote/"]
+	insteadOf = git@github.com:
+[gpg]
+	format = ssh
+[user]
+	signingkey = $WORK/key.pub
+-- seed/README.md --
+# billing

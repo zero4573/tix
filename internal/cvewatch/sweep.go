@@ -819,3 +819,43 @@ func ellipsis(s string, n int) string {
 	}
 	return truncate(s, n) + "…"
 }
+
+func CheckPackages(ctx context.Context, src Sources, pkgs []Package) ([]Finding, error) {
+	byKey := map[pkgKey][]Package{}
+	var keys []pkgKey
+	for _, p := range pkgs {
+		k := pkgKey{p.Ecosystem, p.Name, p.Version}
+		if _, ok := byKey[k]; !ok {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], p)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	hits, err := src.osvQuery(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	idSet := map[string]bool{}
+	for _, ids := range hits {
+		for _, id := range ids {
+			idSet[id] = true
+		}
+	}
+	recs, failed := src.osvRecords(ctx, sortedSet(idSet), false)
+	if len(failed) > 0 {
+		return nil, fmt.Errorf("osv records: %s", strings.Join(failed, "; "))
+	}
+	extra, _ := src.osvRecords(ctx, unscoredCVEs(recs), true)
+	maps.Copy(recs, extra)
+	fs := group(recs, hits, byKey, nil)
+	for i := range fs {
+		fs[i].Priority, fs[i].Major = rank(fs[i].Severity, false, fs[i].RCE, fs[i].Network, 0)
+	}
+	sort.SliceStable(fs, func(i, j int) bool {
+		a, b := fs[i], fs[j]
+		return less(a.Priority, b.Priority, false, false, 0, 0, a.Score, b.Score, a.ID, b.ID)
+	})
+	return fs, nil
+}

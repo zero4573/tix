@@ -1,17 +1,21 @@
 # Security checks
 
 `tix ws sec-check -C <checkout> [--all] <since>` runs the scanners that apply (gitleaks for
-secrets; gosec and govulncheck per Go module; npm audit per `package-lock.json`) and prints
+secrets; gosec and govulncheck per Go module; npm audit per `package-lock.json`; `osv maven`,
+OSV.dev for the versions pinned in `pom.xml`, `build.gradle(.kts)` and `gradle.lockfile`) and prints
 one line per finding, `<new|legacy>  <block|warn>  <tool>  <severity>  <where>  <rule>  <message>`:
 `new` came in with the commits `<since>..HEAD`, `legacy` was already there (only with `--all`).
 It exits 3 when a `new` line says `block`. Every line the range adds with `#nosec`,
-`gitleaks:allow` or `nolint:gosec`, and any change to `.gitleaks.toml`/`.gitleaksignore`, is a
+`gitleaks:allow`, `nolint:gosec` or `@SuppressFBWarnings`, and any change to `.gitleaks.toml`/`.gitleaksignore`, is a
 `new  warn  suppression` line: the review judges each one. govulncheck's `new` is a changed
 `go.mod` line or an added call on the way to the vulnerable function; the standard library's only
-counts as new with a changed `go`/`toolchain` line (its fix is a toolchain bump: the legacy report). A `skip  <tool>  <reason>` line (not installed, no
+counts as new with a changed `go`/`toolchain` line (its fix is a toolchain bump: the legacy report).
+`osv maven`'s `new` is a dependency version the range added to a manifest; it blocks at high and
+critical, and runs only when the range touches a Java manifest (`--all`: always). A `skip  <tool>  <reason>` line (not installed, no
 network for the vulnerability database or the registry) never blocks: name it once in your
 report or on the board line. The repo's own lint carries the language rules (`go.md`,
-`typescript.md`: gosec's rules through golangci-lint, `eslint-plugin-security`).
+`typescript.md`, `java.md`: gosec's rules through golangci-lint, `eslint-plugin-security`,
+SpotBugs with FindSecBugs in the build).
 
 ## Task agents
 Before you report, with your task's fork point as `<since>`
@@ -20,7 +24,8 @@ line, `warn` too, is yours: fix it (the vulnerable dependency bumped to its fixe
 secret removed from the branch, which an unpushed task branch allows, and named in the report
 for rotation; the code made safe). A finding that is wrong for this code gets the narrowest
 suppression with its reason, which the review judges: gosec `// #nosec G204 -- <why>` on the
-line, gitleaks `gitleaks:allow` on the line or its fingerprint in `.gitleaksignore`, never a
+line, SpotBugs `@SuppressFBWarnings(value = "<PATTERN>", justification = "<why>")` on the smallest
+element, gitleaks `gitleaks:allow` on the line or its fingerprint in `.gitleaksignore`, never a
 blanket exclusion. Put the run under `Checks:` (`sec-check: exit <rc>`, with any skip lines).
 
 ## The lead's merge chain
@@ -45,5 +50,5 @@ advisories"), with `| Finding | Where | Risk | Difficulty | Proposal |`:
 - Otherwise: one gate question for all of them, each with its risk, difficulty and what the
   patch involves; options: fix it in this ticket, a follow-up ticket, or accept the risk (left
   as is); recommend by risk. The answer goes into the row's `Proposal`.
-A repo whose lint doesn't wire the language's security rules (gosec, `eslint-plugin-security`) is
-a row too: `moderate`, it adds a dev dependency or lint config.
+A repo whose lint doesn't wire the language's security rules (gosec, `eslint-plugin-security`,
+FindSecBugs) is a row too: `moderate`, it adds a dev dependency or lint config.

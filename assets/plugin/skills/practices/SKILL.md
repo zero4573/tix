@@ -1,12 +1,12 @@
 ---
 name: practices
-description: Language best practices for ticket code (TypeScript, React, Go), the no-comments rule and the security checks (tix ws sec-check - gitleaks, gosec, govulncheck, npm audit - with the legacy report), one rule per line, each paired with what enforces it (a lint rule, a scanner, a type, a test, or review judgment). Load it when a task writes or a review reads code in any language (the no-comments rule covers all of them, Dart, shell, Python and Nix included), and read the language files next to this one for .go, .ts, .tsx, .js or .jsx.
+description: Language best practices for ticket code (TypeScript, React, Go, Java), the no-comments rule and the security checks (tix ws sec-check - gitleaks, gosec, govulncheck, npm audit, OSV for Maven and Gradle - with the legacy report), one rule per line, each paired with what enforces it (a lint rule, a scanner, a type, a test, or review judgment). Load it when a task writes or a review reads code in any language (the no-comments rule covers all of them, Dart, shell, Python and Nix included), and read the language files next to this one for .go, .ts, .tsx, .js, .jsx or .java.
 ---
 
 # Practices
 
 Read the file for each language your diff touches: `typescript.md` (also for `.js`), `react.md`
-for components and hooks (with `typescript.md`), `go.md`. Every rule names what enforces it. A
+for components and hooks (with `typescript.md`), `go.md`, `java.md`. Every rule names what enforces it. A
 rule whose enforcer the repo hasn't wired (a lint rule missing from its config) is still a rule:
 follow it, and the retro proposes wiring it.
 
@@ -22,13 +22,13 @@ models the domain (`tix:principles`, `model-the-domain`). Only these kinds stay:
   protocol quirk), with what forces it;
 - `prettier-ignore`, and suppressions of lint rules that are faulty or style-only;
 - doc comments of a library other repos import, on its exported API; an app's or service's own
-  classes, functions and methods get none (Go `//`, Dart and Rust `///`, JSDoc, docstrings);
+  classes, functions and methods get none (Go `//`, Dart and Rust `///`, JSDoc, Javadoc, docstrings);
 - a link to an issue or RFC for a constraint the code can't express;
 - tool directives, which are not comments (`//go:build`, `//go:generate`, `/// <reference>`).
 
 A surprise in our own code is not explained, it is fixed: rename, extract, add a type, or
 redesign until the comment is unnecessary. A suppression of a rule that protects correctness
-(`react-hooks/exhaustive-deps`, `@ts-ignore`, `//nolint:errcheck`) is removed and the code fixed.
+(`react-hooks/exhaustive-deps`, `@ts-ignore`, `//nolint:errcheck`, `@SuppressWarnings("NullAway")`) is removed and the code fixed.
 A "do not remove" or "IMPORTANT" claim is checked against the code; a real constraint becomes a
 type, a test or a lint rule, then the comment goes. Commented-out code is deleted.
 Enforced by: the `comment-check` hook after every edit in a ticket or spec session, `tix ws

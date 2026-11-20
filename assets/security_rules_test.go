@@ -10,6 +10,8 @@ func TestSecurityScannersRunBeforeReportAndMergeChainRefusesBlockingFinding(t *t
 	retroLeadWant(t, "plugin/skills/practices/SKILL.md", "## Security (every language)", "`security.md`")
 	retroLeadWant(t, "plugin/skills/practices/go.md", "gosec", "govulncheck")
 	retroLeadWant(t, "plugin/skills/practices/typescript.md", "eslint-plugin-security", "npm audit")
+	retroLeadWant(t, "plugin/skills/practices/java.md", "FindSecBugs", "`osv maven`", "@SuppressFBWarnings")
+	retroLeadWant(t, "plugin/skills/practices/security.md", "`osv maven`", "@SuppressFBWarnings", "FindSecBugs")
 	retroLeadWant(t, "plugin/skills/task-agent/SKILL.md", "tix ws sec-check -C <worktree>")
 	retroLeadWant(t, "plugin/skills/lead/SKILL.md",
 		"tix ws sec-check -C <ws>/tasks/<slug>-NN", "the security legacy report", "tix ws sec-check -C <ws>/<slug> <base>")

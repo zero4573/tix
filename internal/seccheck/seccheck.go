@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -53,6 +54,8 @@ type Options struct {
 	ScannerTimeout time.Duration
 	Run            Runner
 	LookPath       func(name string) (string, error)
+	OSV            string
+	Client         *http.Client
 }
 
 const DefaultScannerTimeout = 10 * time.Minute
@@ -63,6 +66,8 @@ var (
 	npmBlockingSeverity = []string{"high", "critical"}
 	slashSuppression    = regexp.MustCompile(`(?://|/\*)\s*(#nosec|gitleaks:allow|nolint:[a-z,]*gosec)`)
 	hashSuppression     = regexp.MustCompile(`#\s*(nosec|gitleaks:allow)`)
+	jvmSuppression      = regexp.MustCompile(`@(SuppressFBWarnings)\b`)
+	jvmExts             = []string{".java", ".kt", ".scala", ".groovy"}
 	slashCommentExts    = []string{".go", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".rs", ".swift", ".dart", ".scala", ".cs", ".php"}
 	hashCommentExts     = []string{".py", ".rb", ".sh", ".bash", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".tf", ".pl", ".r", ".env"}
 	proseExtensions     = []string{".md", ".txt", ".rst", ".adoc"}
@@ -219,6 +224,7 @@ func Run(ctx context.Context, dir string, o Options) (Report, error) {
 	for _, mod := range moduleDirsOf(tracked, "package-lock.json") {
 		s.npmAudit(mod)
 	}
+	s.javaDependencies(tracked)
 	s.suppressions()
 	if !o.IncludeLegacy {
 		rep.Findings = slices.DeleteFunc(rep.Findings, func(f Finding) bool { return !f.New })
@@ -644,6 +650,11 @@ func (s scan) suppressions() {
 
 func suppressionIn(file, text string) []string {
 	ext := strings.ToLower(path.Ext(file))
+	if slices.Contains(jvmExts, ext) {
+		if m := jvmSuppression.FindStringSubmatch(text); m != nil {
+			return m
+		}
+	}
 	switch {
 	case slices.Contains(slashCommentExts, ext):
 		return slashSuppression.FindStringSubmatch(text)

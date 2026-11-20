@@ -38,9 +38,13 @@ the ticket worktree with its base for the whole ticket.
   npm audit    each package-lock.json the range touched (--all: every one),
                production dependencies; new = a package the range added or
                whose locked version it changed; high and critical block
+  osv maven    when the range touched a pom.xml, build.gradle(.kts) or
+               gradle.lockfile (--all: when there is one), the versions they
+               pin, against OSV.dev (network); new = a version the range
+               added to a manifest; high and critical block
 
-  suppression  every line the range adds with #nosec, gitleaks:allow or
-               nolint:gosec, and any change to .gitleaks.toml or
+  suppression  every line the range adds with #nosec, gitleaks:allow,
+               nolint:gosec or @SuppressFBWarnings, and any change to .gitleaks.toml or
                .gitleaksignore: a new warn line, for the review to judge
 
 Each scanner runs at most 10 minutes. One line per finding, new ones first

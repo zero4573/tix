@@ -44,7 +44,7 @@ func TestPracticesStatesNoCommentsRuleWithKeptKindsAndEnforcers(t *testing.T) {
 	retroLeadWant(t, "plugin/skills/practices/SKILL.md",
 		"## No comments", "license or legal headers", "an app's or service's own", "`comment-check` hook",
 		"`react-hooks/exhaustive-deps`", "`note comment-added`", "<slug>-practices.md")
-	for _, f := range []string{"typescript.md", "react.md", "go.md"} {
+	for _, f := range []string{"typescript.md", "react.md", "go.md", "java.md"} {
 		text := retroLeadRead(t, "plugin/skills/practices/"+f)
 		if !strings.Contains(text, "| Rule | Enforced by |") {
 			t.Errorf("practices/%s: no Rule / Enforced by table", f)

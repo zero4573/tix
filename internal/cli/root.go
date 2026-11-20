@@ -36,9 +36,13 @@ vault (tix vault default; else the only vault).`,
 		openCmd(),
 		syncCmd(),
 		wsCmd(),
-
+		cleanCmd(),
 		specCmd(),
 
+		claudeCmd(),
+		layoutCmd(),
+		hookCmd(),
+		dirCmd(),
 		ticketCmd(),
 	)
 	return root

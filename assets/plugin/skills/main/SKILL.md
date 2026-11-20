@@ -18,11 +18,11 @@ sweep needs you (`security.md`, beside this skill)): each is one pass (2), and e
 turn herdr notifies the user of, so it never polls on its own. The user's own messages come first.
 
 ## Tools
-- `tix main list` (`ID agent state pane ticket-status main|user`), `sync`, `start <ID>
-  [--agent claude|kiro] [--continue] [--feedback] [--force]`, `prompt <ID> <text>|--file`, `read <ID>
-  [--lines N]`, `wait <ID> [--timeout S]`, `stop <ID>` (sessions main started, not working),
-  `clean <ID>` (done or closed, session stopped), `watch <ID> <PR links>` (a change to them
-  wakes you; it replaces the ticket's set), `unwatch <ID>`. Exit 1: refused or failed, read why.
+- `tix main list` (`ID agent state pane ticket-status main|user`), `sync`, `start <ID> [--agent
+  claude|kiro] [--continue] [--feedback] [--force]`, `prompt <ID> <text>|--file`, `read <ID> [--lines
+  N]`, `wait <ID> [--timeout S]`, `stop <ID>` (sessions main started, not working),
+  `clean <ID>` (done or closed, session stopped), `watch <ID> <PR links>` (a change wakes you; it
+  replaces the set), `unwatch <ID>`, `fetch [<repo>...]` (when a session says `fetch on the host`).
 - `tix start --list`: `<ID> <status> <summary>`; a status with `, ignored` or `, covered by <lead>`
   needs the user's decision before it starts (the rules).
 - The vault: each ticket's note (`status:`, `lead:`, `blocked-by:`, `covered-by:`, priority,

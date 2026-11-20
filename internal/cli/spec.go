@@ -74,7 +74,7 @@ is shown live and logged to ` + logPath("spec-<vault>") + `.`,
 
 func specSession(ctx vault.Context, question string, cont, print, fetch bool, agent string) error {
 	if fetch {
-		if err := wsFetch(ctx, nil); err != nil {
+		if err := wsFetch(ctx, nil, 0); err != nil {
 			return err
 		}
 	}

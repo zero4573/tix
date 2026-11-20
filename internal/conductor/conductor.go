@@ -31,6 +31,7 @@ type Request struct {
 	Timeout  int      `json:"timeout,omitempty"`
 	PRs      []string `json:"prs,omitempty"`
 	Force    bool     `json:"force,omitempty"`
+	Repos    []string `json:"repos,omitempty"`
 }
 
 type Reply struct {
@@ -141,6 +142,9 @@ func (s *Server) Handle(ctx context.Context, q Request) Reply {
 		}
 		return s.unwatch(q.ID)
 	}
+	if q.Op == "fetch" {
+		return s.fetch(ctx, q.Repos)
+	}
 	if q.Op == "list" {
 		ss, err := s.sessions(ctx)
 		if err != nil {
@@ -178,7 +182,7 @@ func (s *Server) Handle(ctx context.Context, q Request) Reply {
 	case "watch":
 		return s.watch(ctx, q.ID, q.PRs)
 	}
-	return refuse("unknown op %q (list, sync, start, prompt, read, wait, stop, clean, watch, unwatch)", q.Op)
+	return refuse("unknown op %q (list, sync, fetch, start, prompt, read, wait, stop, clean, watch, unwatch)", q.Op)
 }
 
 func (s *Server) ticket(id string) error {
@@ -307,6 +311,9 @@ func (s *Server) start(ctx context.Context, q Request) Reply {
 	}
 	if q.Continue {
 		line += " --continue"
+	}
+	if _, err := os.Stat(filepath.Join(s.WorkRoot, q.ID, "workspace.json")); err == nil && q.Continue && !q.Feedback {
+		line += " --no-fetch"
 	}
 	if q.Force {
 		line += " --force"
@@ -514,7 +521,30 @@ func tail(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-const SyncEvery = 10 * time.Minute
+const (
+	SyncEvery     = 10 * time.Minute
+	FetchMaxAge   = 10 * time.Minute
+	maxFetchRepos = 64
+)
+
+func (s *Server) fetch(ctx context.Context, repos []string) Reply {
+	if len(repos) > maxFetchRepos {
+		return refuse("%d repos: at most %d", len(repos), maxFetchRepos)
+	}
+	for _, r := range repos {
+		if r == "" || strings.HasPrefix(r, "-") || strings.ContainsAny(r, " \t\n") {
+			return refuse("not a repo: %q", r)
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	args := append([]string{"ws", "fetch", "--max-age", FetchMaxAge.String(), "--"}, repos...)
+	out, err := s.Run(cctx, []string{"TIX_VAULT=" + s.Vault}, s.Tix, args...)
+	if err != nil {
+		return Reply{Status: "failed", Detail: "tix ws fetch: " + err.Error(), Output: tail(string(out), 20)}
+	}
+	return Reply{Status: "ok", Detail: "fetched (clones fetched in the last " + FetchMaxAge.String() + " skipped)", Output: tail(string(out), 20)}
+}
 
 func (s *Server) sync(ctx context.Context) Reply {
 	s.mu.Lock()

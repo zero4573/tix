@@ -1047,56 +1047,149 @@ func listNames(names []string) string {
 }
 
 func wsFetchCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "fetch [<repo>...]",
+	var maxAge time.Duration
+	cmd := &cobra.Command{
+		Use:   "fetch [--max-age 10m] [<repo>...]",
 		Short: "Fetch origin in the main clones and pass the refs on to shared clones",
 		Long: `Fetches origin in the given main clones (default: all), in parallel, then
-passes the new refs on to the shared clones in the vault's ticket and spec
-workspaces. Other vaults' shared clones get them on their own fetch.`,
+passes the new refs on to the shared clones of those repos in the vault's
+ticket and spec workspaces. Other vaults' shared clones get them on their own
+fetch. --max-age skips a clone whose last full fetch by tix (its
+.git/tix-fetched stamp) is more recent than that, so several starts in a row
+fetch each repo once.`,
 		ValidArgsFunction: completeRepos,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, err := vault.Require()
 			if err != nil {
 				return err
 			}
-			return wsFetch(ctx, args)
+			repos, err := resolveClones(ctx, args)
+			if err != nil {
+				return err
+			}
+			return wsFetch(ctx, repos, maxAge)
 		},
 	}
+	cmd.Flags().DurationVar(&maxAge, "max-age", 0, "skip a clone fetched within this long (0: fetch every one)")
+	return cmd
 }
 
-func wsFetch(ctx vault.Context, specs []string) error {
+const startFetchMaxAge = 10 * time.Minute
+
+func resolveClones(ctx vault.Context, specs []string) ([]string, error) {
+	clones := map[string]bool{}
+	for _, c := range repo.MainClones(ctx.ProjectsRoot) {
+		clones[c] = true
+	}
 	var repos []string
 	for _, s := range specs {
 		c, ok := repo.Resolve(ctx.ProjectsRoot, s)
-		if !ok {
-			return fmt.Errorf("fetch: no main clone '%s' (see tix ws repos)", s)
+		if !ok || !clones[c] {
+			return nil, fmt.Errorf("fetch: no main clone '%s' (see tix ws repos)", s)
 		}
 		repos = append(repos, c)
 	}
+	return repos, nil
+}
+
+func ticketClones(ctx vault.Context, key string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(c string) {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	if info, err := workspace.Read(filepath.Join(ctx.WorkRoot, key)); err == nil {
+		for _, r := range info.Repos {
+			add(r.Clone())
+		}
+	}
+	for _, p := range note.ListField(note.TicketPath(ctx.Vault, key), "projects") {
+		p = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(p), "[["), "]]")
+		if i := strings.IndexAny(p, "|#"); i >= 0 {
+			p = p[:i]
+		}
+		if c, ok := repo.Resolve(ctx.ProjectsRoot, filepath.Base(p)); ok {
+			add(c)
+		}
+	}
+	return out
+}
+
+const fetchStamp = "tix-fetched"
+
+func fetchedWithin(dir string, age time.Duration) bool {
+	if age <= 0 {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(dir, ".git", fetchStamp))
+	return err == nil && time.Since(st.ModTime()) < age
+}
+
+func stampFetched(dir string) {
+	p := filepath.Join(dir, ".git", fetchStamp)
+	now := time.Now()
+	if err := os.Chtimes(p, now, now); err != nil {
+		_ = os.WriteFile(p, nil, 0o644)
+	}
+}
+
+func gitFetchOrigin(dir string) error {
+	return gitx.Timeout(60*time.Second, dir, "fetch", "--quiet", "--prune", "origin")
+}
+
+func wsFetch(ctx vault.Context, repos []string, maxAge time.Duration) error {
+	return wsFetchWith(ctx, repos, maxAge, gitFetchOrigin)
+}
+
+func wsFetchWith(ctx vault.Context, repos []string, maxAge time.Duration, fetch func(dir string) error) error {
 	if len(repos) == 0 {
 		repos = repo.MainClones(ctx.ProjectsRoot)
 	}
-	if len(repos) == 0 {
-		return nil
+	var due []string
+	for _, c := range repos {
+		if !fetchedWithin(filepath.Join(ctx.ProjectsRoot, c), maxAge) {
+			due = append(due, c)
+		}
 	}
-	fmt.Fprintf(os.Stderr, "tix ws: fetching %d repo(s)...\n", len(repos))
+	if len(due) > 0 {
+		fetchClones(ctx, due, fetch)
+	}
+	refreshSharedClones(ctx, repos)
+	return nil
+}
+
+func fetchClones(ctx vault.Context, due []string, fetch func(dir string) error) {
+	fmt.Fprintf(os.Stderr, "tix ws: fetching %d repo(s)...\n", len(due))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
-	for _, c := range repos {
+	for _, c := range due {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(c string) {
 			defer func() { <-sem; wg.Done() }()
-			if gitx.Timeout(60*time.Second, filepath.Join(ctx.ProjectsRoot, c), "fetch", "--quiet", "--prune", "origin") != nil {
+			dir := filepath.Join(ctx.ProjectsRoot, c)
+			if fetch(dir) != nil {
 				fmt.Fprintf(os.Stderr, "tix ws: fetch failed: %s\n", c)
+				return
 			}
+			stampFetched(dir)
 		}(c)
 	}
 	wg.Wait()
+}
+
+func refreshSharedClones(ctx vault.Context, repos []string) {
+	fetched := map[string]bool{}
+	for _, c := range repos {
+		fetched[c] = true
+	}
 	for _, dir := range workspace.List(ctx.WorkRoot, true) {
 		info, _ := workspace.Read(dir)
 		for _, r := range info.Repos {
-			if r.Mode != "clone" && r.Mode != "explore" {
+			if (r.Mode != "clone" && r.Mode != "explore") || !fetched[r.Clone()] {
 				continue
 			}
 			main := filepath.Join(ctx.ProjectsRoot, r.Clone())
@@ -1108,7 +1201,6 @@ func wsFetch(ctx vault.Context, specs []string) error {
 			}
 		}
 	}
-	return nil
 }
 
 func wsGcCmd() *cobra.Command {

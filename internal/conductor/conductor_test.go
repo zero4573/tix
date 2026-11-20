@@ -244,3 +244,51 @@ func TestSyncAndContinue(t *testing.T) {
 		}
 	}
 }
+
+func TestStartSkipsFetchOnlyForAContinuedWorkspace(t *testing.T) {
+	s, f := setup(t)
+	f.agents = nil
+	if err := os.MkdirAll(filepath.Join(s.WorkRoot, "PROJ-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.WorkRoot, "PROJ-1", "workspace.json"), []byte(`{"id":"PROJ-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := do(t, s, Request{Op: "start", ID: "PROJ-1", Continue: true}); r.Status != "ok" {
+		t.Fatalf("start: %+v", r)
+	}
+	if err := os.MkdirAll(filepath.Join(s.WorkRoot, "PROJ-2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.WorkRoot, "PROJ-2", "workspace.json"), []byte(`{"id":"PROJ-2"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := do(t, s, Request{Op: "start", ID: "PROJ-2", Feedback: true}); r.Status != "ok" {
+		t.Fatalf("start: %+v", r)
+	}
+	var lines []string
+	for _, c := range f.calls {
+		if len(c) > 2 && c[1] == "pane" && c[2] == "run" {
+			lines = append(lines, c[len(c)-1])
+		}
+	}
+	if strings.Join(lines, "; ") != "tix start --continue --no-fetch PROJ-1; tix start --feedback PROJ-2" {
+		t.Errorf("start lines: %v", lines)
+	}
+}
+
+func TestFetchRunsThrottledOnTheHost(t *testing.T) {
+	s, f := setup(t)
+	if r := do(t, s, Request{Op: "fetch", Repos: []string{"bitbucket/acme/api", "web"}}); r.Status != "ok" {
+		t.Fatalf("fetch: %+v", r)
+	}
+	last := f.calls[len(f.calls)-1]
+	if strings.Join(last, " ") != "tix ws fetch --max-age 10m0s -- bitbucket/acme/api web" {
+		t.Errorf("ran %v", last)
+	}
+	for _, bad := range []string{"--all", "a b", ""} {
+		if r := do(t, s, Request{Op: "fetch", Repos: []string{bad}}); r.Status != "refused" {
+			t.Errorf("fetch %q: %+v", bad, r)
+		}
+	}
+}

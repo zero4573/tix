@@ -31,7 +31,7 @@ func mainCmd() *cobra.Command {
 	var cont bool
 	var agent string
 	cmd := &cobra.Command{
-		Use:   "main [--continue] [--agent claude|kiro] | main <list|sync|start|prompt|read|wait|stop|clean|watch|unwatch> ...",
+		Use:   "main [--continue] [--agent claude|kiro] | main <list|sync|fetch|start|prompt|read|wait|stop|clean|watch|unwatch> ...",
 		Short: "The main session: one session that runs the vault's ticket sessions in herdr",
 		Long: `tix main, in a herdr pane on the host, opens the main session of the
 current vault (tix vault default): a session running /tix:main in
@@ -67,6 +67,8 @@ the session calls it:
 
   tix main list                       ticket sessions: ID, agent, state, pane, ticket status, main|user
   tix main sync                       tix sync on the host now (at most every 10 minutes)
+  tix main fetch [<repo>...]          tix ws fetch on the host (default: every main clone;
+                                      one fetched in the last 10 minutes is skipped)
   tix main start <ID> [--agent A] [--feedback] [--continue] [--force]
   tix main prompt <ID> <text>|--file <path>
   tix main read <ID> [--lines N]      the session's recent terminal text
@@ -96,7 +98,7 @@ the session has no service ($` + mainSocketEnv + ` unset).`,
 		mainSimpleCmd("wait", "wait <ID> [--timeout S]", "Wait until the session is idle, done or blocked"),
 		mainSimpleCmd("stop", "stop <ID>", "Close a ticket session main started"),
 		mainSimpleCmd("clean", "clean <ID>", "Run tix clean --yes on the host for a done or closed ticket"),
-		mainSimpleCmd("unwatch", "unwatch <ID>", "Stop watching the ticket's pull requests"), mainWatchCmd())
+		mainSimpleCmd("unwatch", "unwatch <ID>", "Stop watching the ticket's pull requests"), mainWatchCmd(), mainFetchCmd())
 	return cmd
 }
 
@@ -438,6 +440,17 @@ func mainWatchCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return mainDo(cmd.OutOrStdout(), cmd.ErrOrStderr(), conductor.Request{Op: "watch", ID: args[0], PRs: args[1:]})
+		},
+	}
+}
+
+func mainFetchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "fetch [<repo>...]",
+		Short: "Fetch main clones on the host (tix ws fetch; one fetched in the last 10 minutes is skipped)",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return mainDo(cmd.OutOrStdout(), cmd.ErrOrStderr(), conductor.Request{Op: "fetch", Repos: args})
 		},
 	}
 }

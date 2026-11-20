@@ -98,7 +98,7 @@ saves on the installed ones. It's kept in workspace.json for later starts;
 	}
 	f := cmd.Flags()
 	f.BoolVar(&o.force, "force", false, forceHelp)
-	f.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching the main clones first")
+	f.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching the ticket's repos first (its workspace's or projects:, else every main clone; one fetched in the last 10 minutes is skipped)")
 	f.BoolVar(&o.feedback, "feedback", false, "run /tix:pr-feedback instead of /tix:work-ticket")
 	f.BoolVarP(&o.cont, "continue", "c", false, continueHelp)
 	f.BoolVar(&o.list, "list", false, "print the vault's open tickets")
@@ -133,7 +133,7 @@ continues the workspace's last conversation instead.
 	}
 	f := cmd.Flags()
 	f.BoolVar(&o.force, "force", false, forceHelp)
-	f.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching the main clones first")
+	f.BoolVar(&o.noFetch, "no-fetch", false, "skip fetching the ticket's repos first (its workspace's or projects:, else every main clone; one fetched in the last 10 minutes is skipped)")
 	f.BoolVarP(&o.cont, "continue", "c", false, continueHelp)
 	f.StringVar(&o.agent, "agent", "", agentHelp)
 	return cmd
@@ -217,7 +217,7 @@ func start(ctx vault.Context, args []string, o startOpts) error {
 	}
 
 	if !o.noFetch {
-		if err := wsFetch(ctx, nil); err != nil {
+		if err := wsFetch(ctx, ticketClones(ctx, launch[0]), startFetchMaxAge); err != nil {
 			return err
 		}
 	}

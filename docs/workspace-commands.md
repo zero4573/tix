@@ -24,7 +24,7 @@ flowchart LR
 | `tix ws add <ID> <repo> --base <branch> ...` | create or reuse the ticket's worktree |
 | `tix ws ls [<ID>]` | worktrees: branch, uncommitted changes, ahead/behind the base |
 | `tix ws diff <ID> [--stat]` | everything changed on the ticket's branches since they left the base |
-| `tix ws fetch [<repo>...]` | fetch origin in the main clones (and pass refs to older shared clones) |
+| `tix ws fetch [--max-age 10m] [<repo>...]` | fetch origin in the main clones (and pass refs to the shared clones of those repos); `--max-age` skips a clone fetched more recently. `tix start` fetches only the ticket's repos (its workspace's, or its note's `projects:`, else every clone), skipping any fetched in the last 10 minutes |
 | `tix ws refresh <ID>` | rewrite the workspace's `CLAUDE.md` from the vault (commit style, repos) |
 | `tix ws sec-check [-C <dir>] [--all] <since>` | the security scanners (gitleaks, gosec, govulncheck, npm audit) on a checkout: findings of the commits since `<since>` are `new` (exit 3 when one blocks), with `--all` the `legacy` ones too; how the workflow uses it: the `practices` skill's `security.md` |
 | `tix ws mark`, `marks` | the tidy mark, see [finishing a ticket](finishing-a-ticket.md) |

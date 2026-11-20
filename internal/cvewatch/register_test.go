@@ -3,6 +3,7 @@ package cvewatch
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -411,5 +412,55 @@ func TestRenamedRowIsNotToldAgain(t *testing.T) {
 	d = st.Merge(report("2", []Finding{c}, nil), now.Add(13*time.Hour), 12*time.Hour)
 	if len(d.Tell) != 0 || strings.Join(st.Told, ",") != "ticket CVE-2026-1" {
 		t.Errorf("the renamed row was told again: %v, told %v", d.Tell, st.Told)
+	}
+}
+
+func TestEndedReleaseLineIsToldOnceAndKeptThroughAFailure(t *testing.T) {
+	st := &State{Rows: map[string]*Row{}}
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	mongo := Lifecycle{Product: "mongodb", Version: "4.4.18", Cycle: "4.4", EOL: "2024-02-29", Ended: true, Latest: "4.4.32",
+		Where: []Component{{Repo: "bb/acme/stack", File: "compose.yml", Product: "mongodb", Image: "mongo:4.4.18"}}}
+	pg := Lifecycle{Product: "postgresql", Version: "16.4", Cycle: "16", EOL: "2028-11-09", Latest: "16.11", Behind: true}
+	rep := report("1", nil, nil)
+	rep.Lifecycle = []Lifecycle{mongo, pg}
+	rep.ImageSummary = []ImageSummary{{Image: "mongo:4.4.18", Where: []ImageRef{{Repo: "bb/acme/stack", File: "compose.yml", Ref: "mongo:4.4.18"}}, Lower: 40, Fixable: 31}}
+	d := st.Merge(rep, now, 12*time.Hour)
+	if strings.Join(d.Tell, ",") != "ended mongodb@4.4" {
+		t.Fatalf("tell %v", d.Tell)
+	}
+	ev := UpdateResult{Delta: d, Due: true}.Event()
+	if !strings.Contains(ev, "ended mongodb@4.4") {
+		t.Errorf("event %q", ev)
+	}
+	st.Ack(d.Tell)
+	partial := report("2", nil, nil, Skip{"endoflife", "endoflife.date mongodb: 503"}, Skip{"osv", "503"})
+	partial.Lifecycle = []Lifecycle{pg}
+	d = st.Merge(partial, now.Add(13*time.Hour), 12*time.Hour)
+	if len(st.Lifecycle) != 2 || slices.Contains(d.Tell, "ended mongodb@4.4") {
+		t.Errorf("a failed lookup dropped or re-told a line: %+v %v", st.Lifecycle, d.Tell)
+	}
+	reg := Render(st, 12*time.Hour)
+	for _, want := range []string{"ended-release-lines: 1", "| mongodb | 4.4.18 | 4.4 | ended 2024-02-29 | stack compose.yml (mongo:4.4.18) |", "| postgresql | 16.4 | 16 | behind: latest 16.11 |", "| mongo:4.4.18 | stack compose.yml | 40 | 31 |"} {
+		if !strings.Contains(reg, want) {
+			t.Errorf("register lacks %q:\n%s", want, reg)
+		}
+	}
+}
+
+func TestASummarizedImageFindingKeepsItsRow(t *testing.T) {
+	st := &State{Rows: map[string]*Row{}}
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	f := finding("CVE-2026-7", "P2", false, true, "compose.yml (debian:12)")
+	f.Aliases = []string{"DEBIAN-CVE-2026-7"}
+	st.Merge(report("1", []Finding{f}, nil), now, 12*time.Hour)
+	rep := report("2", nil, nil)
+	rep.Summarized = []string{"DEBIAN-CVE-2026-7"}
+	d := st.Merge(rep, now.Add(13*time.Hour), 12*time.Hour)
+	if r := st.Rows["CVE-2026-7"]; r.Status != StatusResolvable || len(d.Changes) != 0 {
+		t.Errorf("a finding still present but summarized read as resolved: %s %+v", whats(d), r)
+	}
+	d = st.Merge(report("3", nil, nil), now.Add(26*time.Hour), 12*time.Hour)
+	if st.Rows["CVE-2026-7"].Status != StatusResolved {
+		t.Errorf("a finding gone from the sweep stayed open: %s", whats(d))
 	}
 }

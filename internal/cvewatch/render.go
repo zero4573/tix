@@ -153,8 +153,14 @@ func Render(st *State, every time.Duration) string {
 	if !st.Next(every).IsZero() {
 		next = st.Next(every).UTC().Format(time.RFC3339)
 	}
-	fmt.Fprintf(&b, "---\ntype: security\ntags: [security]\nlast-sweep: %s\nlast-complete-sweep: %s\nnext-sweep: %s\nrepos: %d\npackages: %d\nopen: %d\np1: %d\np2: %d\n---\n",
-		st.LastSweep, st.LastComplete, next, st.Repos, st.Packages, len(open), p1, p2)
+	ended := 0
+	for _, l := range st.Lifecycle {
+		if l.Ended {
+			ended++
+		}
+	}
+	fmt.Fprintf(&b, "---\ntype: security\ntags: [security]\nlast-sweep: %s\nlast-complete-sweep: %s\nnext-sweep: %s\nrepos: %d\npackages: %d\nimages: %d\nopen: %d\np1: %d\np2: %d\nended-release-lines: %d\n---\n",
+		st.LastSweep, st.LastComplete, next, st.Repos, st.Packages, st.Images, len(open), p1, p2, ended)
 	b.WriteString("# Security register\n\nWritten by `tix cve update` from `.state.json` (main's host service runs it); " +
 		"record a ticket or an assessment with `tix cve set`, never by editing this note.\n")
 
@@ -200,6 +206,35 @@ func Render(st *State, every time.Duration) string {
 		}
 	}
 
+	b.WriteString("\n## Release lines\n")
+	if len(st.Lifecycle) == 0 {
+		b.WriteString("None.\n")
+	} else {
+		b.WriteString("| product | version | line | status | where |\n|---|---|---|---|---|\n")
+		for _, l := range st.Lifecycle {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", md(l.Product), md(l.Version), md(l.Cycle), md(lifecycleStatus(l)), cells(lifecycleWhere(l)))
+		}
+	}
+
+	b.WriteString("\n## Images\n")
+	if len(st.ImageSummary) == 0 {
+		b.WriteString("None scanned.\n")
+	} else {
+		b.WriteString("P1 and P2 findings in an image are rows above; the lower ones are counted here.\n\n" +
+			"| image | where | lower findings | fixed by a rebuild or newer tag |\n|---|---|---|---|\n")
+		for _, s := range st.ImageSummary {
+			var where []string
+			for _, w := range s.Where {
+				where = append(where, repoName(w.Repo)+" "+w.File)
+			}
+			image := []string{s.Image}
+			if s.Note != "" {
+				image = append(image, s.Note)
+			}
+			fmt.Fprintf(&b, "| %s | %s | %d | %d |\n", cells(image), cells(where), s.Lower, s.Fixable)
+		}
+	}
+
 	b.WriteString("\n## Resolved\n")
 	resolved := st.rowsWhere(func(r *Row) bool { return r.Status == StatusResolved })
 	sort.SliceStable(resolved, func(i, j int) bool { return resolved[i].ResolvedOn > resolved[j].ResolvedOn })
@@ -231,6 +266,34 @@ func Render(st *State, every time.Duration) string {
 		fmt.Fprintf(&b, "- %s\n", st.Log[i])
 	}
 	return b.String()
+}
+
+func lifecycleStatus(l Lifecycle) string {
+	switch {
+	case l.Ended && l.EOL != "":
+		return "ended " + l.EOL
+	case l.Ended:
+		return "ended"
+	case l.EndsSoon:
+		return "ends " + l.EOL
+	case l.Behind:
+		return "behind: latest " + l.Latest
+	case l.EOL != "":
+		return "supported until " + l.EOL
+	}
+	return "supported"
+}
+
+func lifecycleWhere(l Lifecycle) []string {
+	var out []string
+	for _, c := range l.Where {
+		s := repoName(c.Repo) + " " + c.File
+		if c.Image != "" {
+			s += " (" + c.Image + ")"
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func ticketNote(t string) string {

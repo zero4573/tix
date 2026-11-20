@@ -88,6 +88,9 @@ type State struct {
 	Skips        []Skip          `json:"skips,omitempty"`
 	Repos        int             `json:"repos"`
 	Packages     int             `json:"packages"`
+	Images       int             `json:"images,omitempty"`
+	Lifecycle    []Lifecycle     `json:"lifecycle,omitempty"`
+	ImageSummary []ImageSummary  `json:"imageSummary,omitempty"`
 }
 
 func OpenDir(dir string) (*os.Root, error) {
@@ -234,7 +237,27 @@ type UpdateResult struct {
 
 const maxEventIDs = 8
 
-var tellOrder = []string{"assess", "ticket", "now resolvable", "failed"}
+var tellOrder = []string{"assess", "ticket", "now resolvable", "ended", "failed"}
+
+const noticeEnded = "ended "
+
+func mergeLifecycle(prev, cur []Lifecycle, partial bool) []Lifecycle {
+	if !partial {
+		return cur
+	}
+	have := map[string]bool{}
+	for _, l := range cur {
+		have[l.Product] = true
+	}
+	out := append([]Lifecycle{}, cur...)
+	for _, l := range prev {
+		if !have[l.Product] {
+			out = append(out, l)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return lifecycleRank(out[i]) < lifecycleRank(out[j]) })
+	return out
+}
 
 func (r UpdateResult) Event() string {
 	if !r.Due || len(r.Tell) == 0 {
@@ -418,13 +441,24 @@ func (st *State) Merge(rep Report, now time.Time, every time.Duration) Delta {
 	if d.Complete {
 		st.LastComplete = rep.Swept
 	}
-	st.Unscanned, st.Skips, st.Repos, st.Packages = rep.Unscanned, rep.Skips, len(rep.Repos), rep.Packages
+	st.Unscanned, st.Skips, st.Repos, st.Packages, st.Images = rep.Unscanned, rep.Skips, len(rep.Repos), rep.Packages, rep.Images
+	st.Lifecycle = mergeLifecycle(st.Lifecycle, rep.Lifecycle, skip["endoflife"])
+	if d.Counted {
+		st.ImageSummary = rep.ImageSummary
+	}
 	seen := map[string]bool{}
 	change := func(r *Row, what string) {
 		r.note(today, what)
 		d.Changes = append(d.Changes, Change{ID: r.ID, Priority: r.priority(), What: what, Summary: r.summary()})
 	}
 	idx := st.aliasIndex()
+	for _, id := range rep.Summarized {
+		if st.Rows[id] != nil {
+			seen[id] = true
+		} else if row, ok := idx[id]; ok {
+			seen[row] = true
+		}
+	}
 	for i := range rep.Findings {
 		f := rep.Findings[i]
 		if !ValidID(f.ID) {
@@ -501,6 +535,11 @@ func (st *State) Merge(rep Report, now time.Time, every time.Duration) Delta {
 		if a, ok := r.action(); ok {
 			d.Actions = append(d.Actions, a)
 			tell[a.Need+" "+a.ID] = true
+		}
+	}
+	for _, l := range st.Lifecycle {
+		if l.Ended {
+			tell[noticeEnded+l.Key()] = true
 		}
 	}
 	for src := range skip {

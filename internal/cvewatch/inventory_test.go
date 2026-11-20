@@ -158,12 +158,12 @@ func TestIntervalFix(t *testing.T) {
 	}{
 		{"1.21.0", "1.21.9", true}, {"1.21.9", "", false}, {"1.22.1", "1.22.2", true}, {"1.22.2", "", false},
 	} {
-		fix, in := intervalFix(ev, c.v)
+		fix, in := intervalFix("", ev, c.v)
 		if fix != c.fix || in != c.in {
 			t.Errorf("intervalFix(%s) = %q %v, want %q %v", c.v, fix, in, c.fix, c.in)
 		}
 	}
-	fix, in := intervalFix([]map[string]string{{"introduced": "1.0"}, {"last_affected": "1.5"}}, "1.2")
+	fix, in := intervalFix("", []map[string]string{{"introduced": "1.0"}, {"last_affected": "1.5"}}, "1.2")
 	if fix != "" || !in {
 		t.Errorf("last_affected: %q %v", fix, in)
 	}

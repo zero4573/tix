@@ -24,6 +24,7 @@ type Package struct {
 	Name      string `json:"name"`
 	Version   string `json:"version"`
 	Dev       bool   `json:"dev,omitempty"`
+	Image     string `json:"image,omitempty"`
 }
 
 type Component struct {
@@ -44,6 +45,7 @@ type Inventory struct {
 	Repos      []string    `json:"repos"`
 	Packages   []Package   `json:"packages"`
 	Components []Component `json:"components"`
+	Images     []ImageRef  `json:"images,omitempty"`
 	Unscanned  []Unscanned `json:"unscanned"`
 }
 
@@ -752,6 +754,12 @@ func (s *repoScan) image(rel, ref string) {
 		return
 	}
 	name, tag := splitImage(ref)
+	if tag == "latest" && !strings.Contains(ref, "@") {
+		s.inv.Unscanned = append(s.inv.Unscanned, Unscanned{Repo: s.repo, File: imageFile(rel, ref),
+			Reason: "floating tag: pin a version to check the image's packages"})
+	} else {
+		s.inv.Images = append(s.inv.Images, ImageRef{Repo: s.repo, File: rel, Ref: ref})
+	}
 	product := imageProduct(name)
 	if product == "" {
 		return

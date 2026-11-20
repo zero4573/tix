@@ -6,7 +6,7 @@ last sweep recorded in `security/.state.json` is 12 hours old, never twice withi
 action, Resolvable, Unresolvable, Watch, Resolved, Unscanned, Log) and
 `security/advisories/<ID>.md`, and wakes you only when something needs you:
 `security sweep <n> P1 <n> P2[ (partial)], assess <IDs>, ticket <IDs>, now resolvable <IDs>,
-failed <sources>`, or `security sweep failed: <why>`; each item comes once, after it reaches you
+ended <product>@<line>..., failed <sources>`, or `security sweep failed: <why>`; each item comes once, after it reaches you
 (the rest of a long list is in `## Needs action`). Never edit `security/` by hand and never sweep yourself
 (`tix cve update --force` only when the user asks for one now). Read only what an ID needs.
 
@@ -24,6 +24,11 @@ failed <sources>`, or `security sweep failed: <why>`; each item comes once, afte
   (`atlassianUserInfo`, so `tix sync` brings it into the vault), the labels, summary and
   description as printed. A required field the create names: take the epic's value; one the
   epic doesn't have: ask. Then `tix cve set <ID> --ticket <KEY>`.
+- A finding whose where is `<file> (<image>)` is in a container image's packages (its distro's
+  or a JAR inside it): the fix is a rebuilt image or a newer base tag, not a library bump;
+  file it the same way.
+- **ended <product>@<line>** (`## Release lines`): tell the user once, one line each: the
+  product, its line, the end date and the images. No ticket unless they ask for one.
 - **now resolvable** with a ticket (its row's ticket column): one `addOrEditJiraIssueComment`
   naming the fix from `tix cve show <ID>`'s `## Fix`.
 - **failed <sources>** or **sweep failed**: tell the user once. A sweep without OSV doesn't
@@ -38,5 +43,5 @@ and start it on the `sync new tickets` event), then put it first in `## Queue` w
 epic (the user just chose it on its own). Not now: `## Proposed` with `· security`. Log it.
 
 ## Report
-One line per ticket created, per assessment and per now-resolvable ID with a ticket; nothing
-else (the register has the rest).
+One line per ticket created, per assessment, per now-resolvable ID with a ticket and per ended
+release line; nothing else (the register has the rest).

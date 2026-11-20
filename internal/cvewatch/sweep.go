@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,11 +20,13 @@ type Affected struct {
 	Version   string `json:"version"`
 	Fix       string `json:"fix,omitempty"`
 	Dev       bool   `json:"dev,omitempty"`
+	Image     string `json:"image,omitempty"`
 }
 
 type Finding struct {
 	ID         string     `json:"id"`
 	Aliases    []string   `json:"aliases"`
+	Related    []string   `json:"related,omitempty"`
 	Priority   string     `json:"priority"`
 	Major      bool       `json:"major"`
 	Resolvable bool       `json:"resolvable"`
@@ -67,21 +70,26 @@ type Skip struct {
 }
 
 type Report struct {
-	Swept      string      `json:"swept"`
-	Days       int         `json:"days"`
-	Repos      []string    `json:"repos"`
-	Packages   int         `json:"packages"`
-	Findings   []Finding   `json:"findings"`
-	Watch      []Watch     `json:"watch"`
-	Unscanned  []Unscanned `json:"unscanned"`
-	Skips      []Skip      `json:"skips"`
-	Components []Component `json:"components"`
+	Swept        string         `json:"swept"`
+	Days         int            `json:"days"`
+	Repos        []string       `json:"repos"`
+	Packages     int            `json:"packages"`
+	Images       int            `json:"images"`
+	Findings     []Finding      `json:"findings"`
+	Watch        []Watch        `json:"watch"`
+	Lifecycle    []Lifecycle    `json:"lifecycle"`
+	ImageSummary []ImageSummary `json:"imageSummary"`
+	Summarized   []string       `json:"summarized,omitempty"`
+	Unscanned    []Unscanned    `json:"unscanned"`
+	Skips        []Skip         `json:"skips"`
+	Components   []Component    `json:"components"`
 }
 
 type Options struct {
 	Days    int
 	Sources Sources
 	Now     func() time.Time
+	Images  ImageScanner
 }
 
 var (
@@ -93,6 +101,15 @@ var (
 type productSpec struct {
 	Keywords []string
 	CPEs     []string
+}
+
+var kevNames = map[string][]string{"mongodb": {"MongoDB"}}
+
+func (p productSpec) kevNamesFor(product string) []string {
+	if names, ok := kevNames[product]; ok {
+		return names
+	}
+	return p.Keywords
 }
 
 var productSpecs = map[string]productSpec{
@@ -115,7 +132,7 @@ var productSpecs = map[string]productSpec{
 	"mariadb":         {[]string{"MariaDB"}, []string{"mariadb:mariadb"}},
 	"redis":           {[]string{"Redis"}, []string{"redis:redis"}},
 	"valkey":          {[]string{"Valkey"}, []string{"lfprojects:valkey", "valkey-io:valkey"}},
-	"mongodb":         {[]string{"MongoDB"}, []string{"mongodb:mongodb"}},
+	"mongodb":         {[]string{"MongoDB Server"}, []string{"mongodb:mongodb"}},
 	"rabbitmq":        {[]string{"RabbitMQ"}, []string{"vmware:rabbitmq", "pivotal_software:rabbitmq", "broadcom:rabbitmq"}},
 	"memcached":       {[]string{"Memcached"}, []string{"memcached:memcached"}},
 	"elasticsearch":   {[]string{"Elasticsearch"}, []string{"elastic:elasticsearch"}},
@@ -170,7 +187,12 @@ func Sweep(ctx context.Context, inv Inventory, opt Options) Report {
 	}
 	src := opt.Sources
 	rep := Report{Swept: now().UTC().Format(time.RFC3339), Days: opt.Days, Repos: inv.Repos,
-		Packages: len(inv.Packages), Unscanned: append([]Unscanned{}, inv.Unscanned...), Components: append([]Component{}, inv.Components...), Findings: []Finding{}, Watch: []Watch{}, Skips: []Skip{}}
+		Unscanned: append([]Unscanned{}, inv.Unscanned...), Components: append([]Component{}, inv.Components...),
+		Findings: []Finding{}, Watch: []Watch{}, Lifecycle: []Lifecycle{}, Skips: []Skip{}}
+	img := scanImages(ctx, opt.Images, inv.Images)
+	packages := append(append([]Package{}, inv.Packages...), img.packages...)
+	rep.Packages, rep.Images = len(packages), img.images
+	rep.Unscanned = append(rep.Unscanned, img.unscanned...)
 
 	kev, err := src.kev(ctx)
 	if err != nil {
@@ -179,7 +201,7 @@ func Sweep(ctx context.Context, inv Inventory, opt Options) Report {
 
 	byKey := map[pkgKey][]Package{}
 	var keys []pkgKey
-	for _, p := range inv.Packages {
+	for _, p := range packages {
 		k := pkgKey{p.Ecosystem, p.Name, p.Version}
 		if _, ok := byKey[k]; !ok {
 			keys = append(keys, k)
@@ -210,11 +232,13 @@ func Sweep(ctx context.Context, inv Inventory, opt Options) Report {
 
 	watch, skips := watchComponents(ctx, src, inv.Components, kev, now(), opt.Days)
 	rep.Watch, rep.Skips = append(rep.Watch, watch...), append(rep.Skips, skips...)
+	life, skips := lifecycles(ctx, src, append(append([]Component{}, inv.Components...), img.runtimes...), now())
+	rep.Lifecycle, rep.Skips = append(rep.Lifecycle, life...), append(rep.Skips, skips...)
 
 	var cves []string
 	seen := map[string]bool{}
 	for _, f := range rep.Findings {
-		for _, a := range append([]string{f.ID}, f.Aliases...) {
+		for _, a := range f.cveIDs() {
 			if strings.HasPrefix(a, "CVE-") && !seen[a] {
 				seen[a] = true
 				cves = append(cves, a)
@@ -233,11 +257,12 @@ func Sweep(ctx context.Context, inv Inventory, opt Options) Report {
 	}
 	for i := range rep.Findings {
 		f := &rep.Findings[i]
-		for _, a := range append([]string{f.ID}, f.Aliases...) {
+		for _, a := range f.cveIDs() {
 			f.EPSS = max(f.EPSS, epss[a])
 		}
 		f.Priority, f.Major = rank(f.Severity, f.KEV != nil, f.RCE, f.Network, f.EPSS)
 	}
+	rep.Findings, rep.ImageSummary, rep.Summarized = splitImageFindings(rep.Findings, img.scanned, img.notes)
 	for i := range rep.Watch {
 		w := &rep.Watch[i]
 		w.EPSS = epss[w.ID]
@@ -252,6 +277,58 @@ func Sweep(ctx context.Context, inv Inventory, opt Options) Report {
 		return less(a.Priority, b.Priority, a.KEV != nil, b.KEV != nil, a.EPSS, b.EPSS, a.Score, b.Score, a.ID, b.ID)
 	})
 	return rep
+}
+
+type ImageSummary struct {
+	Image   string     `json:"image"`
+	Where   []ImageRef `json:"where"`
+	Lower   int        `json:"lower"`
+	Note    string     `json:"note,omitempty"`
+	Fixable int        `json:"fixable"`
+}
+
+func imageOnly(f Finding) bool {
+	for _, p := range f.Packages {
+		if p.Image == "" {
+			return false
+		}
+	}
+	return len(f.Packages) > 0
+}
+
+func splitImageFindings(fs []Finding, scanned map[string][]ImageRef, notes map[string]string) ([]Finding, []ImageSummary, []string) {
+	byImage := map[string]*ImageSummary{}
+	for ref, where := range scanned {
+		byImage[ref] = &ImageSummary{Image: ref, Where: where, Note: notes[ref]}
+	}
+	kept := fs[:0]
+	var summarized []string
+	for _, f := range fs {
+		if f.Priority == "P1" || f.Priority == "P2" || !imageOnly(f) {
+			kept = append(kept, f)
+			continue
+		}
+		summarized = append(append(summarized, f.ID), f.Aliases...)
+		counted := map[string]bool{}
+		for _, p := range f.Packages {
+			s := byImage[p.Image]
+			if s == nil || counted[p.Image] {
+				continue
+			}
+			counted[p.Image] = true
+			s.Lower++
+			if f.Resolvable {
+				s.Fixable++
+			}
+		}
+	}
+	out := make([]ImageSummary, 0, len(byImage))
+	for _, s := range byImage {
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Image < out[j].Image })
+	sort.Strings(summarized)
+	return kept, out, summarized
 }
 
 func less(pa, pb string, ka, kb bool, ea, eb, sa, sb float64, ia, ib string) bool {
@@ -334,7 +411,7 @@ func canonical(ids []string) string {
 			}
 		}
 	}
-	return ids[0]
+	return strings.ReplaceAll(ids[0], ":", "-")
 }
 
 func group(recs map[string]osvRecord, hits map[pkgKey][]string, byKey map[pkgKey][]Package, kev map[string]KEVEntry) []Finding {
@@ -366,6 +443,12 @@ func group(recs map[string]osvRecord, hits map[pkgKey][]string, byKey map[pkgKey
 			pkgsOf[find(id)] = append(pkgsOf[find(id)], k)
 		}
 	}
+	live := map[string]bool{}
+	for id, r := range recs {
+		if r.Withdrawn == "" {
+			live[find(id)] = true
+		}
+	}
 	var out []Finding
 	for root, ids := range members {
 		var rs []osvRecord
@@ -377,8 +460,12 @@ func group(recs map[string]osvRecord, hits map[pkgKey][]string, byKey map[pkgKey
 		if len(rs) == 0 || len(pkgsOf[root]) == 0 {
 			continue
 		}
+		if bundleCovered(rs, pkgsOf[root], parent, find, pkgsOf, live) {
+			continue
+		}
 		f := merge(canonical(ids), ids, rs, kev)
 		seen := map[pkgKey]bool{}
+		listed := map[string]bool{}
 		resolvable := true
 		for _, k := range pkgsOf[root] {
 			if seen[k] {
@@ -390,8 +477,11 @@ func group(recs map[string]osvRecord, hits map[pkgKey][]string, byKey map[pkgKey
 				resolvable = false
 			}
 			for _, p := range byKey[k] {
-				f.Packages = append(f.Packages, Affected{Repo: p.Repo, File: p.File, Ecosystem: p.Ecosystem,
-					Name: p.Name, Version: p.Version, Fix: fix, Dev: p.Dev})
+				a := Affected{Repo: p.Repo, File: p.File, Ecosystem: p.Ecosystem, Name: p.Name, Version: p.Version, Fix: fix, Dev: p.Dev, Image: p.Image}
+				if pk := a.Repo + "|" + a.File + "|" + a.Name + "|" + a.Version; !listed[pk] {
+					listed[pk] = true
+					f.Packages = append(f.Packages, a)
+				}
 			}
 		}
 		sort.Slice(f.Packages, func(i, j int) bool {
@@ -410,9 +500,31 @@ func group(recs map[string]osvRecord, hits map[pkgKey][]string, byKey map[pkgKey
 	return out
 }
 
+func bundleCovered(rs []osvRecord, keys []pkgKey, parent map[string]string, find func(string) string, pkgsOf map[string][]pkgKey, live map[string]bool) bool {
+	var ups []string
+	for _, r := range rs {
+		if len(r.Upstream) < 2 {
+			return false
+		}
+		ups = append(ups, r.Upstream...)
+	}
+	for _, u := range ups {
+		if _, ok := parent[u]; !ok || !live[find(u)] {
+			return false
+		}
+		for _, k := range keys {
+			if !slices.Contains(pkgsOf[find(u)], k) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func merge(id string, ids []string, rs []osvRecord, kev map[string]KEVEntry) Finding {
 	f := Finding{ID: id}
 	aliases := map[string]bool{}
+	related := map[string]bool{}
 	cwes := map[string]bool{}
 	refs := map[string]bool{}
 	var text strings.Builder
@@ -430,6 +542,11 @@ func merge(id string, ids []string, rs []osvRecord, kev map[string]KEVEntry) Fin
 		}
 		if f.Summary == "" || strings.HasPrefix(r.ID, "GHSA-") && r.Summary != "" {
 			f.Summary = firstNonEmpty(r.Summary, firstLine(r.Details))
+		}
+		if len(r.Upstream) > 1 {
+			for _, u := range r.Upstream {
+				related[u] = true
+			}
 		}
 		fmt.Fprintf(&text, "%s %s ", r.Summary, r.Details)
 		if r.Published != "" && (f.Published == "" || r.Published < f.Published) {
@@ -464,8 +581,13 @@ func merge(id string, ids []string, rs []osvRecord, kev map[string]KEVEntry) Fin
 		f.Severity = "UNKNOWN"
 	}
 	f.Aliases = sortedSet(aliases)
+	for a := range aliases {
+		delete(related, a)
+	}
+	delete(related, id)
+	f.Related = sortedSet(related)
 	f.CWEs = sortedSet(cwes)
-	for _, a := range append([]string{id}, f.Aliases...) {
+	for _, a := range f.cveIDs() {
 		if e, ok := kev[a]; ok {
 			f.KEV = &e
 			fmt.Fprintf(&text, "%s %s", e.Name, e.Description)
@@ -482,6 +604,10 @@ func merge(id string, ids []string, rs []osvRecord, kev map[string]KEVEntry) Fin
 	}
 	f.Summary = ellipsis(f.Summary, maxSummary)
 	return f
+}
+
+func (f Finding) cveIDs() []string {
+	return append(append([]string{f.ID}, f.Aliases...), f.Related...)
 }
 
 func sevRank(s string) int {
@@ -526,13 +652,13 @@ func fixFor(rs []osvRecord, k pkgKey) string {
 				if rg.Type == "GIT" {
 					continue
 				}
-				if fix, in := intervalFix(rg.Events, v); in {
-					if fix != "" && (best == "" || compareVersions(fix, best) > 0) {
+				if fix, in := intervalFix(k.Ecosystem, rg.Events, v); in {
+					if fix != "" && (best == "" || compareIn(k.Ecosystem, fix, best) > 0) {
 						best = fix
 					}
 				}
 				for _, e := range rg.Events {
-					if fx := e["fixed"]; fx != "" && compareVersions(fx, v) > 0 {
+					if fx := e["fixed"]; fx != "" && compareIn(k.Ecosystem, fx, v) > 0 {
 						later = append(later, fx)
 					}
 				}
@@ -542,32 +668,32 @@ func fixFor(rs []osvRecord, k pkgKey) string {
 	if best != "" {
 		return best
 	}
-	sort.Slice(later, func(i, j int) bool { return compareVersions(later[i], later[j]) < 0 })
+	sort.Slice(later, func(i, j int) bool { return compareIn(k.Ecosystem, later[i], later[j]) < 0 })
 	if len(later) > 0 {
 		return later[0]
 	}
 	return ""
 }
 
-func intervalFix(events []map[string]string, v string) (string, bool) {
+func intervalFix(eco string, events []map[string]string, v string) (string, bool) {
 	in := false
 	for _, e := range events {
 		switch {
 		case e["introduced"] != "":
 			intro := e["introduced"]
-			in = intro == "0" || compareVersions(v, intro) >= 0
+			in = intro == "0" || compareIn(eco, v, intro) >= 0
 		case e["fixed"] != "":
-			if in && compareVersions(v, e["fixed"]) < 0 {
+			if in && compareIn(eco, v, e["fixed"]) < 0 {
 				return e["fixed"], true
 			}
 			in = false
 		case e["last_affected"] != "":
-			if in && compareVersions(v, e["last_affected"]) <= 0 {
+			if in && compareIn(eco, v, e["last_affected"]) <= 0 {
 				return "", true
 			}
 			in = false
 		case e["limit"] != "":
-			if in && compareVersions(v, e["limit"]) < 0 {
+			if in && compareIn(eco, v, e["limit"]) < 0 {
 				return "", true
 			}
 			in = false
@@ -645,7 +771,7 @@ func watchComponents(ctx context.Context, src Sources, comps []Component, kev ma
 		}
 		for _, id := range sortedKEV(kev) {
 			e := kev[id]
-			if e.DateAdded >= from.Format("2006-01-02") && kevMatches(e, spec.Keywords) {
+			if e.DateAdded >= from.Format("2006-01-02") && kevMatches(e, spec.kevNamesFor(p)) {
 				add(Watch{ID: e.CVE, Product: p, Severity: "UNKNOWN", RCE: rceText.MatchString(e.Name + " " + e.Description),
 					Network: true, KEV: &e, Description: e.Description, Published: e.DateAdded, Where: where[p]})
 			}

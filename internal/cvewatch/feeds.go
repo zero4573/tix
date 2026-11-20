@@ -21,6 +21,7 @@ type Sources struct {
 	KEV       string
 	EPSS      string
 	NVD       string
+	EOL       string
 	NVDKey    string
 	NVDPause  time.Duration
 	Retry     time.Duration
@@ -55,6 +56,7 @@ func DefaultSources() Sources {
 		KEV:      "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
 		EPSS:     "https://api.first.org/data/v1/epss",
 		NVD:      "https://services.nvd.nist.gov/rest/json/cves/2.0",
+		EOL:      "https://endoflife.date/api",
 		NVDPause: 6500 * time.Millisecond,
 		Client:   &http.Client{Timeout: 90 * time.Second, CheckRedirect: keepKeyOnHost},
 	}
@@ -143,6 +145,7 @@ type osvQuery struct {
 type osvRecord struct {
 	ID        string   `json:"id"`
 	Aliases   []string `json:"aliases"`
+	Upstream  []string `json:"upstream"`
 	Summary   string   `json:"summary"`
 	Details   string   `json:"details"`
 	Published string   `json:"published"`
@@ -230,6 +233,9 @@ func (s Sources) osvRecords(ctx context.Context, ids []string, optional bool) (m
 					failed = append(failed, id+": "+err.Error())
 				}
 				return
+			}
+			if len(r.Upstream) == 1 {
+				r.Aliases = append(r.Aliases, r.Upstream...)
 			}
 			recs[id] = r
 		}(id)

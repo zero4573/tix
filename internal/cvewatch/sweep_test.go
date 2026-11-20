@@ -21,6 +21,7 @@ type feeds struct {
 	nvd      map[string][]any
 	nvdCalls atomic.Int32
 	fail     map[string]int
+	eol      map[string]any
 }
 
 func (f *feeds) server(t *testing.T) *httptest.Server {
@@ -65,6 +66,13 @@ func (f *feeds) server(t *testing.T) *httptest.Server {
 				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+		case strings.HasPrefix(r.URL.Path, "/eol/"):
+			v, ok := f.eol[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/eol/"), ".json")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v)
 		case r.URL.Path == "/nvd":
 			f.nvdCalls.Add(1)
 			kw := r.URL.Query().Get("keywordSearch")
@@ -369,5 +377,23 @@ func TestGetRetriesThenGivesUp(t *testing.T) {
 	calls.Store(10)
 	if err := src.get(context.Background(), srv.URL+"/never", nil, &out); err == nil || !strings.Contains(err.Error(), "429") || calls.Load() != 10+maxAttempts {
 		t.Errorf("gave up: %v after %d calls", err, calls.Load()-10)
+	}
+}
+
+func TestMongoDBWatchMatchesTheServerNotItsClients(t *testing.T) {
+	spec := productSpecs["mongodb"]
+	kw := spec.Keywords[0]
+	for desc, want := range map[string]bool{
+		"A use-after-free in the replication component of MongoDB Server can occur when a primary steps up.": true,
+		"The MongoDB C# Driver's BSON library contains an uncontrolled resource consumption weakness.":       false,
+		"Mongoose is a MongoDB object modeling tool designed to work in an asynchronous environment.":        false,
+		"Portabase is a database backup and restore tool for PostgreSQL, MySQL, MongoDB, Redis and files.":   false,
+	} {
+		if got := spec.covers(nvdCVE{Description: desc}, kw); got != want {
+			t.Errorf("%q: %v, want %v", desc, got, want)
+		}
+	}
+	if !kevMatches(KEVEntry{Vendor: "MongoDB", Product: "MongoDB"}, spec.kevNamesFor("mongodb")) {
+		t.Error("a KEV entry for MongoDB isn't matched")
 	}
 }

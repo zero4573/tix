@@ -372,7 +372,7 @@ clusters, and the vault's `AGENTS.md` has the rules.
 | `tix spec repo checkout\|fetch\|ls\|reset` | Inside a spec session: exploration clones of any branch, to build and test in (never committed). |
 | `tix teach [--continue] [<topic>] \| --list` | Learn a topic (kebab-case) over many sessions: a session running `/tix:teach <topic>` in this terminal, with the vault and every repo read-only. No topic: pick one of the vault's `learning/*/` or type a new one (without a terminal it prints them and fails). A new conversation each time; `--continue` (`-c`) reopens the topic's last one. `--list` prints the topics. See "Learning a topic". |
 | `tix main [--continue] [--agent claude\|kiro]` | In a herdr pane: the main session (`/tix:main`) in `<workRoot>/.main-<vault>`, with its host service. Inside it, `tix main list`, `sync`, `fetch [<repo>...]` (throttled; a restart's `tix start` gets `--no-fetch`), `start <ID> [--agent] [--feedback] [--continue]`, `prompt <ID> <text>`, `read <ID>`, `wait <ID>`, `stop <ID>` and `clean <ID>` call that service; exit 1 refused or failed, 4 no service. See "Main session". |
-| `tix cve sweep\|update\|due\|set\|show` | `sweep [--json] [--days N] [--repo <slug>]...` checks every main clone's pinned dependencies and container images against OSV.dev, CISA KEV, FIRST EPSS and NVD, highest priority first, with each fix version (exit 3 when there's a P1); `update [--every 12h] [--force]` sweeps when due and writes the vault's `security/` register; `due` prints the last and next sweep; `set <ID> --ticket <KEY>\|--assess <text>` and `set --epic <KEY>` record decisions; `show <ID> [--jira]` prints a row or the issue to file. See "Security sweep". |
+| `tix cve sweep\|update\|due\|set\|show` | `sweep [--json] [--days N] [--repo <slug>]...` checks every main clone's pinned dependencies and container images (their packages read with syft) against OSV.dev, CISA KEV, FIRST EPSS, NVD and endoflife.date, highest priority first, with each fix version (exit 3 when there's a P1); `update [--every 12h] [--force]` sweeps when due and writes the vault's `security/` register; `due` prints the last and next sweep; `set <ID> --ticket <KEY>\|--assess <text>` and `set --epic <KEY>` record decisions; `show <ID> [--jira]` prints a row or the issue to file. See "Security sweep". |
 | `tix claude [claude args]` | `claude` in the current repo with the vault as its knowledge base: the vault added, the plugin's skills, and the repo's project notes named in the system prompt. |
 | `tix layout [--apply]` | Move repos into `<projectsRoot>/<provider>/<owner>/<repo>`. |
 | `tix vault lock` / `tix vault links` | Used by `/tix:save`: serialize writes to shared notes, and move notes without breaking wikilinks. |
@@ -682,25 +682,42 @@ flowchart TB
   10 minutes itself); an hourly sync bringing new tickets; every 12 hours,
   the security sweep.
 - **Security sweep:** main's host service runs `tix cve update` on the host
-  whenever the last sweep recorded in the vault's `security/.state.json` is 6
+  whenever the last sweep recorded in the vault's `security/.state.json` is 12
   hours old (`tix main serve --cve-sweep-each`; a restart doesn't sweep again,
   `tix cve due` prints the last and next times). The sweep reads every main
   clone's lockfiles and manifests (Go, npm, Maven, Gradle, PyPI, crates.io,
-  RubyGems, Pub, Packagist) and container images, and checks them against
-  OSV.dev, CISA KEV, FIRST EPSS and NVD (NVD for the runtimes the images run,
-  such as nginx or Java). Package names and versions go to those public
-  services; workspace, path and git sources don't. Findings are merged across
-  their IDs, ranked P1 to P4 (P1: in KEV, or remote code execution over the
-  network rated critical or high) and given the fixing version where there is
-  one; anything the sweep can't read is listed as unscanned. The merge into
-  the state is code, not the agent: a row moves to resolvable when a fix
-  ships, to resolved only when its source ran and its files were read, and
-  keeps its ranking when KEV or EPSS failed. It writes `security/security.md`
-  and `security/advisories/<ID>.md`, and wakes main only when a major issue
-  needs an assessment or a ticket, or a ticketed one became fixable. Main
-  records its decisions with `tix cve set`, files major issues under the epic
-  `tix cve set --epic` names (text from `tix cve show <ID> --jira`) and asks
-  you whether to start them. The playbook is the main skill's `security.md`.
+  RubyGems, Pub, Packagist) and the container images they pin, and checks them
+  against OSV.dev, CISA KEV, FIRST EPSS and NVD (NVD for the runtimes the
+  images run, such as nginx or Java). Each pinned image's packages are read
+  with `syft` (pulled from the registry with podman's login, cached for 7 days
+  in the user cache dir; a floating tag is listed as unscanned): its distro's
+  packages are checked against that distro's own advisories in OSV (Alpine,
+  Debian, Ubuntu, RHEL/UBI, Rocky, Alma, Wolfi), which know backported fixes,
+  and the JARs, npm, Go and Python packages inside it like any other package.
+  A P3 or P4 finding found only in images is counted per image (`## Images`:
+  how many, how many a rebuild or newer tag fixes) instead of listed, so a
+  base image doesn't flood the register; P1 and P2 are rows like any other,
+  and a row that drops to P3 stays open rather than reading as resolved. endoflife.date gives each
+  runtime's and base distro's release line: ended, ending within 90 days, or
+  behind the line's latest release (`## Release lines`). Package names and
+  versions go to those public services; workspace, path and git sources
+  don't. Findings are merged across their IDs (a distro's record under its
+  CVE; an advisory bundling several CVEs, such as an RHSA or USN, keeps its
+  own row, ranked by the CVEs it fixes, unless each of them already has one),
+  ranked P1 to P4 (P1: in KEV, or remote code execution over the network rated
+  critical or high) and given the fixing version where there is one; anything
+  the sweep can't read is listed as unscanned. The merge into the state is
+  code, not the agent: one row per issue across sweeps (a watch item that is
+  also a package finding is that finding; a row renamed to its CVE keeps what
+  main was told), a row moves to resolvable when a fix ships, to resolved only
+  when its source ran and its files were read, and keeps its ranking when KEV
+  or EPSS failed. It writes `security/security.md` and
+  `security/advisories/<ID>.md`, and wakes main only when a major issue needs
+  an assessment or a ticket, a ticketed one became fixable, or a release line
+  ended, each once. Main records its decisions with `tix cve set`, files major
+  issues under the epic `tix cve set --epic` names (text from `tix cve show
+  <ID> --jira`) and asks you whether to start them. The playbook is the main
+  skill's `security.md`.
 - **Autopilot** (`autopilot: stack` in `board.md`, the default): after the
   hand-over the PO runs `tix:ship`. It tidies and signs the ticket branches,
   pushes them with `/tix:save`, opens one pull request per repo (ready for

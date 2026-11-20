@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 type cveDeps struct {
 	now     func() time.Time
 	sources func() cvewatch.Sources
+	images  cvewatch.ImageScanner
 }
 
 func hostSources() cvewatch.Sources {
@@ -30,7 +32,17 @@ func hostSources() cvewatch.Sources {
 	return src
 }
 
-func cveCmd() *cobra.Command { return cveCmdWith(cveDeps{now: time.Now, sources: hostSources}) }
+func hostImages() cvewatch.ImageScanner {
+	cache := ""
+	if dir, err := os.UserCacheDir(); err == nil {
+		cache = filepath.Join(dir, "tix", "sbom")
+	}
+	return cvewatch.Syft{CacheDir: cache}.Scan
+}
+
+func cveCmd() *cobra.Command {
+	return cveCmdWith(cveDeps{now: time.Now, sources: hostSources, images: hostImages()})
+}
 
 func cveCmdWith(d cveDeps) *cobra.Command {
 	cmd := &cobra.Command{
@@ -47,14 +59,23 @@ func cveSweepCmd(d cveDeps) *cobra.Command {
 	var only []string
 	cmd := &cobra.Command{
 		Use:   "sweep [--json] [--days N] [--repo <slug|clone>]...",
-		Short: "Check every main clone against OSV, CISA KEV, EPSS and NVD",
+		Short: "Check every main clone and its images against OSV, CISA KEV, EPSS, NVD and endoflife.date",
 		Long: `Reads the dependency lockfiles and manifests of every main clone under the
 vault's projectsRoot (--repo: only those), and checks them against the
 public vulnerability databases:
 
   OSV.dev      the packages (Go modules and the Go toolchain, npm, Maven,
                PyPI, crates.io, RubyGems, Pub, Packagist): which advisories
-               affect the pinned version, and the version that fixes each
+               affect the pinned version, and the version that fixes each;
+               also every pinned container image's packages, read with syft
+               (registry pulls, no daemon; cached 7 days in the user cache
+               dir): its distro's packages (Alpine, Debian, Ubuntu, RHEL/UBI,
+               Rocky, Alma, Wolfi) against that distro's own advisories, and
+               the JARs, npm, Go and Python packages inside it. A P3 or P4
+               finding found only in images is counted per image, not listed
+  endoflife.date  the release line of each runtime and base distro (the
+               image tag, the distro, runtimes syft finds): ended, ending
+               within 90 days, or behind the line's latest release
   CISA KEV     the known exploited vulnerabilities catalog
   FIRST EPSS   the probability each CVE is exploited in the next 30 days
   NVD          critical and high CVEs published in the last --days (default
@@ -82,6 +103,8 @@ Text output, highest priority first:
 
   <P> <id> <severity> [KEV] [RCE] epss=<n> <fix|no fix> <repo> <file> <package>@<version>[ -> <fix>] ...
   watch <P> <id> <severity> [KEV] [RCE] <product> <repo>:<image> ...
+  line <product> <version> <line> <ended DATE|ends DATE|behind latest V|supported> <repo>:<image> ...
+  image <ref> lower=<n> fixable=<n> [note=...]   (P3/P4 findings found only in that image)
   unscanned <repo> <file> <reason>
   skip <source> <reason>
 
@@ -143,12 +166,12 @@ func runSweep(c context.Context, ctx vault.Context, only []string, days int, d c
 		return cvewatch.Report{}, fmt.Errorf("cve: no main clones under %s", ctx.ProjectsRoot)
 	}
 	inv := cvewatch.Collect(ctx.ProjectsRoot, clones)
-	return cvewatch.Sweep(c, inv, cvewatch.Options{Days: days, Sources: d.sources(), Now: d.now}), nil
+	return cvewatch.Sweep(c, inv, cvewatch.Options{Days: days, Sources: d.sources(), Now: d.now, Images: d.images}), nil
 }
 
 func printSweep(out io.Writer, rep cvewatch.Report) {
-	fmt.Fprintf(out, "swept %s: %d repos, %d packages, %d findings, %d watch\n",
-		rep.Swept, len(rep.Repos), rep.Packages, len(rep.Findings), len(rep.Watch))
+	fmt.Fprintf(out, "swept %s: %d repos, %d images, %d packages, %d findings, %d watch\n",
+		rep.Swept, len(rep.Repos), rep.Images, rep.Packages, len(rep.Findings), len(rep.Watch))
 	for _, f := range rep.Findings {
 		fix := "no fix"
 		if f.Resolvable {
@@ -174,6 +197,29 @@ func printSweep(out io.Writer, rep cvewatch.Report) {
 			where = append(where, c.Repo+":"+img)
 		}
 		fmt.Fprintf(out, "watch %s %s %s%s %s %s\n", w.Priority, w.ID, w.Severity, flags(w.KEV != nil, w.RCE), w.Product, strings.Join(where, " "))
+	}
+	for _, l := range rep.Lifecycle {
+		status := "supported"
+		switch {
+		case l.Ended:
+			status = "ended " + l.EOL
+		case l.EndsSoon:
+			status = "ends " + l.EOL
+		case l.Behind:
+			status = "behind latest " + l.Latest
+		}
+		var where []string
+		for _, c := range l.Where {
+			where = append(where, c.Repo+":"+c.Image)
+		}
+		fmt.Fprintf(out, "line %s %s %s %s %s\n", l.Product, l.Version, l.Cycle, strings.TrimSpace(status), strings.Join(where, " "))
+	}
+	for _, s := range rep.ImageSummary {
+		note := ""
+		if s.Note != "" {
+			note = " note=" + strings.ReplaceAll(s.Note, " ", "_")
+		}
+		fmt.Fprintf(out, "image %s lower=%d fixable=%d%s\n", s.Image, s.Lower, s.Fixable, note)
 	}
 	for _, u := range rep.Unscanned {
 		fmt.Fprintf(out, "unscanned %s %s %s\n", u.Repo, u.File, u.Reason)

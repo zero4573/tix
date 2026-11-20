@@ -1,5 +1,5 @@
 {
-  description = "claude-tickets: a ticket workflow for Claude Code, with an Obsidian vault as long-term memory";
+  description = "tix: a ticket workflow for Claude Code, with an Obsidian vault as long-term memory";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -14,13 +14,12 @@
       packages = forAll (pkgs: {
         default = (built pkgs).default;
         plugin = (built pkgs).plugin;
+      } // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        llamaRuntimeLibs = (built pkgs).llamaRuntimeLibs;
       });
 
-      # home-manager: programs.claude-tickets.* (and .obsidian.* for vaults)
-      homeModules.claudeTickets = ./nix/home.nix;
+      homeModules.tix = ./nix/home.nix;
       homeModules.obsidianVaults = obsidian.homeModule;
-      # NixOS: the Flathub Obsidian, scoped to the vault folder (needs
-      # nix-flatpak's services.flatpak)
       nixosModules.obsidian = obsidian.nixosModule;
 
       checks = forAll (pkgs: { default = (built pkgs).default; });

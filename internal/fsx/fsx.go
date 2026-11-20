@@ -1,0 +1,149 @@
+package fsx
+
+import (
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func Within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func Inside(path, dir string) bool {
+	return Within(path, dir) && filepath.Clean(path) != filepath.Clean(dir)
+}
+
+func Depth(rel string) int {
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == "" {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
+}
+
+func IsDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func OlderThanDays(path string, n int) bool {
+	st, err := os.Stat(path)
+	return err == nil && time.Since(st.ModTime()) >= time.Duration(n+1)*24*time.Hour
+}
+
+func CopyFile(src, dest string) error {
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, st.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	_ = os.Chmod(dest, st.Mode().Perm())
+	return os.Chtimes(dest, st.ModTime(), st.ModTime())
+}
+
+func CopyTree(src, dest string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		target := filepath.Join(dest, rel)
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		default:
+			return CopyFile(p, target)
+		}
+	})
+}
+
+func RemoveAll(path string) error {
+	if os.RemoveAll(path) == nil {
+		return nil
+	}
+	_ = filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() {
+			_ = os.Chmod(p, 0o755)
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
+}
+
+func RemoveEmptyDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			RemoveEmptyDirs(filepath.Join(dir, e.Name()))
+		}
+	}
+	_ = os.Remove(dir)
+}
+
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if st, err := os.Stat(path); err == nil {
+		perm = st.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp.Name(), perm)
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
+}
+
+func WriteNote(f string, data []byte) error {
+	target, err := filepath.EvalSymlinks(f)
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(target); err == nil {
+		mode = st.Mode().Perm()
+	}
+	return WriteFileAtomic(target, data, mode)
+}

@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+prefix=/usr/local bindir='' datadir='' go=${GO:-go}
+for arg in "$@"; do
+  case "$arg" in
+    --prefix=*) prefix=${arg#*=} ;;
+    --bindir=*) bindir=${arg#*=} ;;
+    --datadir=*) datadir=${arg#*=} ;;
+    GO=*) go=${arg#*=} ;;
+    -h|--help) sed -n '2,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) echo "configure: unknown option: $arg (see ./configure --help)" >&2; exit 1 ;;
+  esac
+done
+case "$prefix" in "~"/*) prefix=$HOME/${prefix#"~/"} ;; esac
+: "${bindir:=$prefix/bin}" "${datadir:=$prefix/share}"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+status=0
+printf 'checking for go... '
+if have "$go"; then
+  v=$("$go" env GOVERSION 2>/dev/null | sed 's/^go//')
+  major=${v%%.*} rest=${v#*.} minor=${rest%%.*}
+  if [ "${major:-0}" -gt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -ge 26 ]; }; then
+    echo "$v"
+  else
+    echo "$v: too old, tix needs Go 1.26 or newer"; status=1
+  fi
+else
+  echo "no: install Go 1.26+ (https://go.dev/dl)"; status=1
+fi
+for t in git claude; do
+  printf 'checking for %s... ' "$t"
+  if have "$t"; then echo yes; else echo "no (tix needs it at run time)"; fi
+done
+printf 'checking for fzf... '
+if have fzf; then echo yes; else echo "no (optional: vaults are picked from a numbered list)"; fi
+[ "$status" -eq 0 ] || { echo "configure: fix the above, then run it again" >&2; exit 1; }
+
+cat > config.mk <<EOF2
+# Written by ./configure $*
+PREFIX = $prefix
+BINDIR = $bindir
+DATADIR = $datadir
+GO = $go
+EOF2
+echo "configure: wrote config.mk (installing into $bindir); now run make, then make install"

@@ -1,0 +1,67 @@
+# tix ws sec-check: the security scanners on a checkout, with the findings
+# the range introduced told from the ones already there (stub scanners; only
+# git and the stubs on PATH, so a real scanner on the host changes nothing)
+[windows] skip
+chmod 755 bin/git
+chmod 755 bin/gosec
+chmod 755 bin/gitleaks
+exec sh -c 'ln -s "$(command -v tix)" bin/tix'
+env PATH=$WORK/bin
+exec git init -q -b main repo
+cp main.go repo/main.go
+cp go.mod repo/go.mod
+exec git -C repo add -A
+exec git -C repo commit -q -m base
+cp main2.go repo/main.go
+exec git -C repo commit -q -am change
+
+# a new HIGH gosec finding blocks; the legacy one shows only with --all;
+# govulncheck would run (Go code changed) but isn't there; no lockfile, so no npm
+! exec tix ws sec-check -C repo HEAD~1
+stdout '^new  block  gosec  high  main.go:4  G204  Subprocess launched with variable$'
+stdout '^skip  govulncheck  not installed$'
+! stdout legacy
+! stdout npm
+! exec tix ws sec-check -C repo --all HEAD~1
+stdout '^legacy  warn  gosec  medium  main.go:3  G104  Errors unhandled$'
+
+# the scanners run in the checkout, gitleaks over the range only (whole
+# history with --all), redacted
+grep 'gitleaks git --no-banner --redact .* --log-opts HEAD~1..HEAD ' scans.log
+grep 'gitleaks git --no-banner --redact .* --log-opts HEAD ' scans.log
+grep 'gosec -no-fail -fmt json ./...' scans.log
+
+# nothing new to block: exit 0; a missing scanner is a skip line
+rm bin/gitleaks
+exec tix ws sec-check -C repo HEAD
+stdout '^skip  gitleaks  not installed$'
+! stdout gosec
+
+# a bad <since> is a usage error
+! exec tix ws sec-check -C repo nope
+stderr 'nope is not a commit'
+
+-- bin/git --
+#!/bin/sh
+exec "$REAL_GIT" "$@"
+-- bin/gitleaks --
+#!/bin/sh
+echo "gitleaks $*" >> "$WORK/scans.log"
+echo '[]'
+-- bin/gosec --
+#!/bin/sh
+echo "gosec $*" >> "$WORK/scans.log"
+printf '{"Issues":[{"severity":"HIGH","confidence":"HIGH","rule_id":"G204","details":"Subprocess launched with variable","file":"%s/main.go","line":"4"},{"severity":"MEDIUM","confidence":"HIGH","rule_id":"G104","details":"Errors unhandled","file":"%s/main.go","line":"3"}]}\n' "$PWD" "$PWD"
+-- go.mod --
+module example.com/acme
+
+go 1.24
+-- main.go --
+package main
+
+func main() { old() }
+-- main2.go --
+package main
+
+func main() { old() }
+func run()  { exec(x) }
